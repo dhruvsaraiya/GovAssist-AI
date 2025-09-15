@@ -1,8 +1,9 @@
 from fastapi import APIRouter, UploadFile, File, Form
 from typing import Optional
 from ..schemas.chat import ChatResponse, ChatMessage
-import time
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 @router.post("", response_model=ChatResponse, summary="Send chat message (text/image/audio)")
@@ -32,15 +33,23 @@ async def chat(
         detected_type = media_type
 
     user_msg = ChatMessage(
-        id=str(time.time()),
         role='user',
         content=content,
         type=detected_type,  # type: ignore
         media_uri=media_uri
     )
 
+    # Log the detected message type and context
+    logger.info(
+        "[chat] received message detected_type=%s param_media_type=%s has_file=%s file_name=%s text_len=%d",
+        detected_type,
+        media_type,
+        bool(file),
+        (file.filename if file else None),
+        len(content or "")
+    )
+
     assistant_msg = ChatMessage(
-        id=str(time.time()),
         role='assistant',
         content=f"Echo: {content}",
         type='text'

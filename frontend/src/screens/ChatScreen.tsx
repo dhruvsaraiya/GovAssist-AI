@@ -16,15 +16,27 @@ export const ChatScreen: React.FC = () => {
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
   const appendBackendMessages = (resp: BackendChatResponse) => {
-    // Backend returns array of user + assistant; convert to ChatMessage objects
-    setMessages(prev => [...prev, ...resp.messages.map(m => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      createdAt: Date.now(),
-      type: (m.type === 'file' ? 'text' : m.type) as ChatMessage['type'],
-      mediaUri: m.media_uri || undefined
-    }))]);
+    setMessages(prev => {
+      const existingIds = new Set(prev.map(p => p.id));
+      const newMsgs: ChatMessage[] = [];
+      resp.messages.forEach((m, idx) => {
+        let baseId = m.id || `${Date.now()}-${idx}`;
+        // If duplicate, append role + idx + random suffix
+        if (existingIds.has(baseId)) {
+          baseId = `${baseId}-${m.role}-${idx}-${Math.random().toString(36).slice(2,6)}`;
+        }
+        existingIds.add(baseId);
+        newMsgs.push({
+          id: baseId,
+          role: m.role,
+          content: m.content,
+          createdAt: Date.now(),
+          type: (m.type === 'file' ? 'text' : m.type) as ChatMessage['type'],
+          mediaUri: m.media_uri || undefined
+        });
+      });
+      return [...prev, ...newMsgs];
+    });
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
   };
 

@@ -1,12 +1,12 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
-import time
+from uuid import uuid4
 
 MessageRole = Literal['user', 'assistant', 'system']
 MessageType = Literal['text', 'image', 'audio', 'file']
 
 class ChatMessage(BaseModel):
-    id: str = Field(default_factory=lambda: str(time.time()))
+    id: str = Field(default_factory=lambda: uuid4().hex)
     role: MessageRole
     content: str
     type: MessageType = 'text'
