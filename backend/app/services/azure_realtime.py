@@ -77,17 +77,6 @@ class RealtimeClient:
     @asynccontextmanager
     async def connect(self):  # type: ignore[override]
         client = await self._ensure_client()
-        # Defensive: older openai versions may not expose beta.realtime
-        # realtime_obj = getattr(getattr(client, 'beta', None), 'realtime', None)
-        # if realtime_obj is None or not hasattr(realtime_obj, 'connect'):
-        #     logger.error(
-        #         "Realtime interface missing. has_beta=%s beta_has_realtime=%s openai_version=%s deployment=%s",
-        #         hasattr(client, 'beta'),
-        #         hasattr(getattr(client, 'beta', None), 'realtime'),
-        #         getattr(__import__('openai'), '__version__', 'unknown'),
-        #         self.deployment,
-        #     )
-        #     raise RuntimeError("Realtime API not available (beta.realtime absent)")
         async with client.beta.realtime.connect(model=self.deployment) as connection:  # type: ignore[attr-defined]
             await connection.session.update(session={"output_modalities": ["text", "audio"]})
             yield connection
