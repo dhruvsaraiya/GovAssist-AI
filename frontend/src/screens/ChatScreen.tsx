@@ -6,9 +6,12 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Audio } from 'expo-av';
 import { sendChatMessage, BackendChatResponse } from '../services/api';
+import { BACKEND_URL } from '../config';
 // WebView fallback not used with top shutter; retained if future inline rendering is reintroduced
 // import { WebView } from 'react-native-webview';
 import FormWebView from '../components/FormWebView';
+import aadhaarMapping from '../forms/mappings/formAadhaar.json';
+import incomeMapping from '../forms/mappings/formIncome.json';
 
 export const ChatScreen: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([{
@@ -17,6 +20,7 @@ export const ChatScreen: React.FC = () => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [activeFormUrl, setActiveFormUrl] = useState<string | null>(null);
+  const [activeFormMapping, setActiveFormMapping] = useState<Record<string, any> | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
   const appendBackendMessages = (resp: BackendChatResponse) => {
@@ -51,6 +55,13 @@ export const ChatScreen: React.FC = () => {
       // eslint-disable-next-line no-console
       console.log('[chat] activating form url', newFormUrl);
       setActiveFormUrl(newFormUrl);
+      // pick a demo mapping based on filename
+      try {
+        const fname = newFormUrl.split('/').pop() || '';
+        if (fname.includes('formAadhaar')) setActiveFormMapping(aadhaarMapping as any);
+        else if (fname.includes('formIncome')) setActiveFormMapping(incomeMapping as any);
+        else setActiveFormMapping(null);
+      } catch (e) { setActiveFormMapping(null); }
     }
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
   };
@@ -131,7 +142,7 @@ export const ChatScreen: React.FC = () => {
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       {activeFormUrl && (
-        <FormWebView url={activeFormUrl} onClose={() => setActiveFormUrl(null)} />
+        <FormWebView url={activeFormUrl} autoFillData={activeFormMapping || undefined} autoFillOnLoad={!!activeFormMapping} onClose={() => { setActiveFormUrl(null); setActiveFormMapping(null); }} />
       )}
       <View style={styles.chatArea}>
         <FlatList
@@ -149,6 +160,12 @@ export const ChatScreen: React.FC = () => {
         </TouchableOpacity>
         <TouchableOpacity style={styles.iconBtn} onPress={toggleRecording}>
           <Ionicons name={recording ? 'stop-circle-outline' : 'mic-outline'} size={22} color={recording ? '#dc2626' : '#374151'} />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.iconBtn} onPress={() => { setActiveFormUrl(`${BACKEND_URL}/forms/formAadhaar.html`); setActiveFormMapping(aadhaarMapping as any); }}>
+          <Ionicons name="document-text-outline" size={20} color="#374151" />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.iconBtn} onPress={() => { setActiveFormUrl(`${BACKEND_URL}/forms/formIncome.html`); setActiveFormMapping(incomeMapping as any); }}>
+          <Ionicons name="list-outline" size={20} color="#374151" />
         </TouchableOpacity>
         <TextInput
           style={styles.textInput}

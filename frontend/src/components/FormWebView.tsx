@@ -9,6 +9,8 @@ export interface FormWebViewProps {
   initialSnap?: number;      // starting index in snapPoints
   snapPoints?: number[];     // height fractions (0-1) from screen height
   title?: string;
+  autoFillData?: Record<string, any>;
+  autoFillOnLoad?: boolean;
 }
 
 /*
@@ -22,11 +24,13 @@ export const FormWebView: React.FC<FormWebViewProps> = ({
   onClose,
   initialSnap = 1,
   snapPoints = [0.25, 0.4, 0.55],
-  title = 'Form'
+  title = 'Form',
+  ...props
 }) => {
   const screenH = Dimensions.get('window').height;
   const [currentSnap, setCurrentSnap] = useState(initialSnap);
   const fracAnim = useRef(new Animated.Value(snapPoints[initialSnap] || 0)).current;
+  const webviewRef = useRef<any>(null);
 
   const animateToSnap = useCallback((index: number) => {
     const clamped = Math.max(0, Math.min(index, snapPoints.length - 1));
@@ -64,6 +68,27 @@ export const FormWebView: React.FC<FormWebViewProps> = ({
   // This is a temporary solution; for production consider a native PDF renderer (e.g. react-native-pdf).
   const effectiveUrl = isPdf ? `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}` : url;
 
+  const injectMapping = useCallback((mapping?: Record<string, any>) => {
+    if (!mapping) return;
+    try {
+      const script = `(function(){
+        function fill(m){ for(const k in m){ const el = document.getElementById(k) || document.querySelector('[name="'+k+'"]'); if(el){ el.value = m[k]; el.dispatchEvent(new Event('input',{bubbles:true})); } } }
+        if(typeof window.fillForm !== 'function'){ window.fillForm = fill; }
+        window.fillForm(${JSON.stringify(mapping)});
+      })(); true;`;
+      webviewRef.current?.injectJavaScript(script);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[FormWebView] injectMapping failed', e);
+    }
+  }, []);
+
+  const onWebviewLoad = useCallback(() => {
+    if (props.autoFillOnLoad && props.autoFillData) {
+      injectMapping(props.autoFillData);
+    }
+  }, [injectMapping, props.autoFillData, props.autoFillOnLoad]);
+
   return (
     <Animated.View style={[styles.container, heightStyle]} accessibilityLabel="Form panel" testID="form-webview">
       <View style={styles.header} {...responder.panHandlers}>
@@ -83,11 +108,13 @@ export const FormWebView: React.FC<FormWebViewProps> = ({
       </View>
       <View style={styles.webContainer}>
         <WebView
+          ref={webviewRef}
           source={{ uri: effectiveUrl }}
           style={{ flex:1 }}
           startInLoadingState
           originWhitelist={["*"]}
           allowsFullscreenVideo
+          onLoadEnd={() => onWebviewLoad()}
           onError={(e) => {
             // eslint-disable-next-line no-console
             console.warn('[FormWebView] load error', e.nativeEvent);

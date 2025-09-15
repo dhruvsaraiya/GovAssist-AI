@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Income Certificate Application (Demo)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    label { display:block; margin-top:10px; font-weight:600; }
+    input, select { width:100%; padding:8px; margin-top:6px; box-sizing:border-box; }
+    button { margin-top:16px; padding:10px 14px; }
+  </style>
+</head>
+<body>
+  <h1>Income Certificate Application (Demo)</h1>
+  <form id="incomeForm">
+    <label for="applicant_name">Applicant name</label>
+    <input id="applicant_name" name="applicant_name" />
+
+    <label for="date_of_birth">Date of birth</label>
+    <input type="date" id="date_of_birth" name="date_of_birth" />
+
+    <label for="household_members">Household members</label>
+    <input id="household_members" name="household_members" />
+
+    <label for="annual_income">Annual income (INR)</label>
+    <input id="annual_income" name="annual_income" />
+
+    <label for="income_proof_type">Income proof type</label>
+    <input id="income_proof_type" name="income_proof_type" />
+
+    <label for="address_line1">Address line 1</label>
+    <input id="address_line1" name="address_line1" />
+
+    <label for="city">City</label>
+    <input id="city" name="city" />
+
+    <label for="state">State</label>
+    <input id="state" name="state" />
+
+    <label for="pin_code">PIN code</label>
+    <input id="pin_code" name="pin_code" />
+
+    <label for="mobile">Mobile</label>
+    <input id="mobile" name="mobile" />
+
+    <label for="email">Email</label>
+    <input id="email" name="email" />
+
+    <button type="button" onclick="alert('Submitted (demo)')">Submit</button>
+  </form>
+  <script>
+    window.fillForm = function(mapping) {
+      try {
+        for (const k in mapping) {
+          const el = document.getElementById(k) || document.querySelector('[name="' + k + '"]');
+          if (!el) continue;
+          el.value = mapping[k] || '';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
+    };
+  </script>
+</body>
+</html>

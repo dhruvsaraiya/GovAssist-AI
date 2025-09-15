@@ -1,0 +1,13 @@
+{
+  "applicant_name": "Meera Singh",
+  "date_of_birth": "1980-11-09",
+  "household_members": "3",
+  "annual_income": "150000",
+  "income_proof_type": "Bank Statement",
+  "address_line1": "24 Park Street",
+  "city": "Kolkata",
+  "state": "West Bengal",
+  "pin_code": "700016",
+  "mobile": "9001234567",
+  "email": "meera.s@example.com"
+}

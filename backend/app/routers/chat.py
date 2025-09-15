@@ -1,9 +1,9 @@
-from fastapi import APIRouter, UploadFile, File, Form
+from fastapi import APIRouter, UploadFile, File, Form, Request
 from typing import Optional
 from ..schemas.chat import ChatResponse, ChatMessage
 from urllib.parse import urlparse
 
-def extract_form_url(text: str) -> Optional[str]:
+def extract_form_url(text: str, request: Request) -> Optional[str]:
     """Naive trigger detection for Phase 1.
 
     Rules:
@@ -20,14 +20,21 @@ def extract_form_url(text: str) -> Optional[str]:
         candidate = after
     else:
         candidate = None
-    # Keyword heuristics
+    # Keyword heuristics - map a few demo keywords to local demo HTML forms
     if candidate is None:
         keyword_map = {
-            'form': 'https://forms.office.com/Pages/ResponsePage.aspx?id=v4j5cvGGr0GRqy180BHbRztchRYH2iBPvTNZJs2KqEZUNjBUQ05SRUdLTldLMklNTzgwQjBVREZDQS4u',
+            'aadhaar': '/forms/formAadhaar.html',
+            'aadhaar form': '/forms/formAadhaar.html',
+            'aadhaar update': '/forms/formAadhaar.html',
+            'income': '/forms/formIncome.html',
+            'income certificate': '/forms/formIncome.html',
+            'form': '/forms/formAadhaar.html',
         }
         for k, v in keyword_map.items():
             if k in lowered:
-                candidate = v
+                # Build absolute URL using incoming request base
+                base = str(request.base_url).rstrip('/')
+                candidate = base + v
                 break
     if not candidate:
         return None
@@ -46,6 +53,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 @router.post("", response_model=ChatResponse, summary="Send chat message (text/image/audio)")
 async def chat(
+    request: Request,
     text: Optional[str] = Form(None, description="Text content of the message"),
     media_type: Optional[str] = Form(None, description="Explicit media type if sending file: image|audio"),
     file: Optional[UploadFile] = File(None, description="Image or audio file upload")
@@ -87,7 +95,7 @@ async def chat(
         len(content or "")
     )
 
-    form_url = extract_form_url(content)
+    form_url = extract_form_url(content, request)
     assistant_msg = ChatMessage(
         role='assistant',
         content=(f"Opening form: {form_url}" if form_url else f"Echo: {content}"),

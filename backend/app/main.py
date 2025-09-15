@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import chat
+from fastapi.staticfiles import StaticFiles
 import logging
 import sys
+import os
 
 # Configure root logging if not already configured by Uvicorn
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
@@ -24,6 +26,25 @@ app.add_middleware(
 )
 
 app.include_router(chat.router, prefix="/api")
+
+# Serve demo static forms
+forms_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'static', 'forms'))
+root_static = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'static'))
+candidates = [forms_dir, root_static]
+mounted = False
+for d in candidates:
+    try:
+        exists = os.path.isdir(d) and any(f.lower().endswith('.html') for f in os.listdir(d))
+    except Exception:
+        exists = False
+    logging.getLogger(__name__).info("Resolved candidate forms dir: %s (has_html=%s)", d, exists)
+    if exists:
+        app.mount('/forms', StaticFiles(directory=d), name='forms')
+        logging.getLogger(__name__).info("Mounted forms from %s at /forms", d)
+        mounted = True
+        break
+if not mounted:
+    logging.getLogger(__name__).warning("No demo forms found; skipping /forms mount. Tried: %s", candidates)
 
 @app.get("/health")
 async def health():

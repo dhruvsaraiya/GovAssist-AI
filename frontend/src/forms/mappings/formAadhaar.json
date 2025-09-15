@@ -1,0 +1,12 @@
+{
+  "applicant_name": "Ramesh Patel",
+  "father_name": "Suresh Patel",
+  "date_of_birth": "1988-03-14",
+  "gender": "Male",
+  "address_line1": "12 MG Road",
+  "city": "Ahmedabad",
+  "state": "Gujarat",
+  "pin_code": "380001",
+  "mobile": "9876501234",
+  "email": "ramesh.patel@example.com"
+}
