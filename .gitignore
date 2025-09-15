@@ -1,0 +1,28 @@
+# Node / JS
+frontend/node_modules/
+**/dist/
+**/build/
+
+# Python
+backend/.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Environment / secrets (placeholder examples)
+.env
+.env.local
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Expo / React Native
+*.expo*
+expo-debug.log

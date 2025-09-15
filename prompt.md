@@ -1,0 +1,11 @@
+- Initialize a frontend folder with basic React native setup.
+  - Create a basic folder structure for the frontend.
+  - add ui that is like a basic chat application - single user chat interface
+  - implement basic chat functionality (send/receive messages) that can accept text, audio and image inputs
+  - I also want to have a webview component that can display a webpage inside the app
+    - later will automate the form filling in the webview based on chat inputs and backend responses
+    - so keep that in mind while creating the folder structure and setting up the project
+- Initialize a backend folder with basic FastAPI setup.
+  - Create a basic folder structure for the backend.
+  - Implement a basic endpoint that can accept chat messages from the frontend and respond with a text / audio / image message.
+  - The backend will later integrate with a language model to generate responses based on user inputs, so keep that in mind while creating the folder structure and setting up the project.
