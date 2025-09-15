@@ -2,6 +2,11 @@ from fastapi import APIRouter, UploadFile, File, Form, Request
 from typing import Optional
 from ..schemas.chat import ChatResponse, ChatMessage
 from urllib.parse import urlparse
+import logging
+from ..services.azure_realtime import generate_assistant_reply  # type: ignore
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/chat", tags=["chat"])
 
 def extract_form_url(text: str, request: Request) -> Optional[str]:
     """Naive trigger detection for Phase 1.
@@ -46,10 +51,7 @@ def extract_form_url(text: str, request: Request) -> Optional[str]:
         return candidate
     except Exception:
         return None
-import logging
 
-logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/chat", tags=["chat"])
 
 @router.post("", response_model=ChatResponse, summary="Send chat message (text/image/audio)")
 async def chat(
@@ -96,9 +98,26 @@ async def chat(
     )
 
     form_url = extract_form_url(content, request)
+    # If a form URL was detected, prioritize that actionable response.
+    if form_url:
+        assistant_content = f"Opening form: {form_url}"
+    else:
+        # Attempt realtime model generation for plain text user messages.
+        assistant_content = await generate_assistant_reply(content) if detected_type == 'text' else ''
+        logger.info(
+            "[chat] realtime model reply length=%d empty=%s", len(assistant_content or ""), not bool(assistant_content)
+        )
+        if not assistant_content:
+            assistant_content = f"Echo: {content}"
+
+    # Always log final assistant content (truncated) and whether a form URL is attached
+    logger.info(
+        "[chat] assistant response form_url=%s preview=%s", form_url, (assistant_content[:120] + ('…' if len(assistant_content) > 120 else ''))
+    )
+
     assistant_msg = ChatMessage(
         role='assistant',
-        content=(f"Opening form: {form_url}" if form_url else f"Echo: {content}"),
+        content=assistant_content,
         type='text',
         form_url=form_url
     )
