@@ -17,9 +17,16 @@ logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
 app = FastAPI(title="GovAssist AI Backend", version="0.1.0")
 
+FRONTEND_ORIGINS = [
+    "http://localhost:8081",  # expo web dev
+    "http://127.0.0.1:8081",
+    "http://localhost:19006", # expo classic web port
+    "http://127.0.0.1:19006",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: restrict in production
+    allow_origins=FRONTEND_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -1,6 +1,5 @@
 import React, { useCallback, useRef, useState, useEffect } from 'react';
-import { Animated, PanResponder, StyleSheet, View, Text, TouchableOpacity, Dimensions, Easing } from 'react-native';
-import { WebView } from 'react-native-webview';
+import { Animated, PanResponder, StyleSheet, View, Text, TouchableOpacity, Dimensions, Easing, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 export interface FormWebViewProps {
@@ -31,6 +30,12 @@ export const FormWebView: React.FC<FormWebViewProps> = ({
   const [currentSnap, setCurrentSnap] = useState(initialSnap);
   const fracAnim = useRef(new Animated.Value(snapPoints[initialSnap] || 0)).current;
   const webviewRef = useRef<any>(null);
+  // Load WebView dynamically only on native platforms to avoid web import errors
+  let WebViewComponent: any = null;
+  if (Platform.OS !== 'web') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
+    WebViewComponent = require('react-native-webview').WebView;
+  }
 
   const animateToSnap = useCallback((index: number) => {
     const clamped = Math.max(0, Math.min(index, snapPoints.length - 1));
@@ -67,6 +72,7 @@ export const FormWebView: React.FC<FormWebViewProps> = ({
   // Basic strategy: use Google Docs viewer for PDFs to avoid download prompts in RN WebView.
   // This is a temporary solution; for production consider a native PDF renderer (e.g. react-native-pdf).
   const effectiveUrl = isPdf ? `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}` : url;
+  const [webSrcDoc, setWebSrcDoc] = useState<string | null>(null);
 
   const injectMapping = useCallback((mapping?: Record<string, any>) => {
     if (!mapping) return;
@@ -89,6 +95,38 @@ export const FormWebView: React.FC<FormWebViewProps> = ({
     }
   }, [injectMapping, props.autoFillData, props.autoFillOnLoad]);
 
+  // Web: fetch HTML and inject mapping into srcDoc so iframe runs fillForm on load
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    let cancelled = false;
+    async function fetchAndPrepare() {
+      try {
+        // eslint-disable-next-line no-console
+        console.log('[FormWebView] fetching for srcDoc', effectiveUrl);
+        const res = await fetch(effectiveUrl, { credentials: 'omit' });
+        // Debugging: log response headers for CORS troubleshooting
+        // eslint-disable-next-line no-console
+        try { const headerArr: any[] = []; (res.headers as any).forEach((v: string, k: string) => headerArr.push([k,v])); console.log('[FormWebView] fetch response headers:', headerArr); } catch (e) { console.log('[FormWebView] could not enumerate headers'); }
+        if (!res.ok) {
+          const text = await res.text().catch(() => '<no body>');
+          throw new Error(`HTTP ${res.status}: ${text}`);
+        }
+        let html = await res.text();
+        if (props.autoFillOnLoad && props.autoFillData) {
+          const injector = `\n<script>document.addEventListener('DOMContentLoaded', function(){ try{ if(window.fillForm) window.fillForm(${JSON.stringify(props.autoFillData)}); }catch(e){ console.error('fillForm failed', e); } });</script>`;
+          if (html.includes('</body>')) html = html.replace('</body>', injector + '</body>'); else html += injector;
+        }
+        if (!cancelled) setWebSrcDoc(html);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[FormWebView] failed to fetch/prepare srcDoc for web', e);
+        if (!cancelled) setWebSrcDoc(null);
+      }
+    }
+    fetchAndPrepare();
+    return () => { cancelled = true; };
+  }, [effectiveUrl, props.autoFillOnLoad, JSON.stringify(props.autoFillData)]);
+
   return (
     <Animated.View style={[styles.container, heightStyle]} accessibilityLabel="Form panel" testID="form-webview">
       <View style={styles.header} {...responder.panHandlers}>
@@ -107,23 +145,35 @@ export const FormWebView: React.FC<FormWebViewProps> = ({
         </View>
       </View>
       <View style={styles.webContainer}>
-        <WebView
-          ref={webviewRef}
-          source={{ uri: effectiveUrl }}
-          style={{ flex:1 }}
-          startInLoadingState
-          originWhitelist={["*"]}
-          allowsFullscreenVideo
-          onLoadEnd={() => onWebviewLoad()}
-          onError={(e) => {
-            // eslint-disable-next-line no-console
-            console.warn('[FormWebView] load error', e.nativeEvent);
-          }}
-          onHttpError={(e) => {
-            // eslint-disable-next-line no-console
-            console.warn('[FormWebView] HTTP error', e.nativeEvent.statusCode);
-          }}
-        />
+        {Platform.OS === 'web' ? (
+          <iframe
+            title={title}
+            srcDoc={webSrcDoc ?? '<p>Loading form...</p>'}
+            style={{ flex:1, width: '100%', height: '100%', border: 0 }}
+          />
+        ) : (
+          WebViewComponent ? (
+            <WebViewComponent
+              ref={webviewRef}
+              source={{ uri: effectiveUrl }}
+              style={{ flex:1 }}
+              startInLoadingState
+              originWhitelist={["*"]}
+              allowsFullscreenVideo
+              onLoadEnd={() => onWebviewLoad()}
+              onError={(e: any) => {
+                // eslint-disable-next-line no-console
+                console.warn('[FormWebView] load error', e.nativeEvent);
+              }}
+              onHttpError={(e: any) => {
+                // eslint-disable-next-line no-console
+                console.warn('[FormWebView] HTTP error', e.nativeEvent.statusCode);
+              }}
+            />
+          ) : (
+            <View style={{ flex:1, justifyContent:'center', alignItems:'center' }}><Text>WebView not available</Text></View>
+          )
+        )}
       </View>
     </Animated.View>
   );

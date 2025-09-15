@@ -1,0 +1,31 @@
+{
+  "form_id": "formIncome",
+  "title": "Mudra Loan Application (Demo)",
+  "fields": [
+    { "id": "enterprise_name", "label": "Name of the Enterprise", "type": "text", "required": true },
+    { "id": "application_sl_no", "label": "Application Sl. No.", "type": "text", "required": false },
+    { "id": "branch_name", "label": "Name of the Branch", "type": "text", "required": false },
+    { "id": "category", "label": "Category", "type": "text", "required": true },
+    { "id": "constitution", "label": "Constitution", "type": "text", "required": true },
+    { "id": "address_line1", "label": "Current Business Address", "type": "text", "required": true },
+    { "id": "state", "label": "State", "type": "text", "required": true },
+    { "id": "pin_code", "label": "PIN code", "type": "number", "required": true },
+    { "id": "premises", "label": "Business Premises", "type": "text", "required": true },
+    { "id": "telephone", "label": "Telephone No.", "type": "text", "required": false },
+    { "id": "mobile", "label": "Mobile No.", "type": "text", "required": true },
+    { "id": "email", "label": "Email", "type": "text", "required": false },
+    { "id": "business_activity", "label": "Business Activity", "type": "text", "required": true },
+    { "id": "date_commencement", "label": "Date of Commencement", "type": "date", "required": false },
+    { "id": "unit_registered", "label": "Unit Registered", "type": "text", "required": false },
+    { "id": "registration_no", "label": "Registration No", "type": "text", "required": false },
+    { "id": "registered_office_address", "label": "Registered Office Address", "type": "text", "required": false },
+    { "id": "skill_certified", "label": "Skill Certified", "type": "text", "required": false },
+    { "id": "social_category", "label": "Social Category", "type": "text", "required": false },
+    { "id": "p1_name", "label": "P1 Name", "type": "text", "required": false },
+    { "id": "p1_dob", "label": "P1 DOB", "type": "date", "required": false },
+    { "id": "p1_sex", "label": "P1 Sex", "type": "text", "required": false },
+    { "id": "p1_address", "label": "P1 Address", "type": "text", "required": false },
+    { "id": "p1_qual", "label": "P1 Qualification", "type": "text", "required": false },
+    { "id": "p1_exp", "label": "P1 Experience", "type": "number", "required": false }
+  ]
+}

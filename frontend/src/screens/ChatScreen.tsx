@@ -57,7 +57,7 @@ export const ChatScreen: React.FC = () => {
       setActiveFormUrl(newFormUrl);
       // pick a demo mapping based on filename
       try {
-        const fname = newFormUrl.split('/').pop() || '';
+        const fname = String(newFormUrl).split('/').pop() || '';
         if (fname.includes('formAadhaar')) setActiveFormMapping(aadhaarMapping as any);
         else if (fname.includes('formIncome')) setActiveFormMapping(incomeMapping as any);
         else setActiveFormMapping(null);
