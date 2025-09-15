@@ -6,6 +6,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Audio } from 'expo-av';
 import { sendChatMessage, BackendChatResponse } from '../services/api';
+// WebView fallback not used with top shutter; retained if future inline rendering is reintroduced
+// import { WebView } from 'react-native-webview';
+import FormWebView from '../components/FormWebView';
 
 export const ChatScreen: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([{
@@ -13,9 +16,11 @@ export const ChatScreen: React.FC = () => {
   }]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [activeFormUrl, setActiveFormUrl] = useState<string | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
   const appendBackendMessages = (resp: BackendChatResponse) => {
+    let newFormUrl: string | null = null;
     setMessages(prev => {
       const existingIds = new Set(prev.map(p => p.id));
       const newMsgs: ChatMessage[] = [];
@@ -32,11 +37,21 @@ export const ChatScreen: React.FC = () => {
           content: m.content,
           createdAt: Date.now(),
           type: (m.type === 'file' ? 'text' : m.type) as ChatMessage['type'],
-          mediaUri: m.media_uri || undefined
+          mediaUri: m.media_uri || undefined,
+          formUrl: m.form_url || undefined
         });
+        console.log("Received response ", m);
+        if (m.role === 'assistant' && m.form_url) {
+          newFormUrl = m.form_url;
+        }
       });
       return [...prev, ...newMsgs];
     });
+    if (newFormUrl) {
+      // eslint-disable-next-line no-console
+      console.log('[chat] activating form url', newFormUrl);
+      setActiveFormUrl(newFormUrl);
+    }
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
   };
 
@@ -111,16 +126,23 @@ export const ChatScreen: React.FC = () => {
     }
   }, [recording, startRecording, stopRecording]);
 
+  // (Deprecated) formHeight logic removed – top shutter overlay handles sizing.
+
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <FlatList
-        ref={listRef}
-        data={messages}
-        keyExtractor={m => m.id}
-        renderItem={({ item }) => <MessageBubble message={item} />}
-        contentContainerStyle={styles.listContent}
-        onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
-      />
+      {activeFormUrl && (
+        <FormWebView url={activeFormUrl} onClose={() => setActiveFormUrl(null)} />
+      )}
+      <View style={styles.chatArea}>
+        <FlatList
+          ref={listRef}
+          data={messages}
+          keyExtractor={m => m.id}
+          renderItem={({ item }) => <MessageBubble message={item} />}
+          contentContainerStyle={styles.listContent}
+          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+        />
+      </View>
       <View style={styles.inputRow}>
         <TouchableOpacity style={styles.iconBtn} onPress={pickImage}>
           <Ionicons name="image-outline" size={22} color="#374151" />
@@ -146,6 +168,7 @@ export const ChatScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#ffffff' },
+  chatArea: { flex: 1 },
   listContent: { paddingVertical: 12 },
   inputRow: { flexDirection: 'row', padding: 8, alignItems: 'center', borderTopWidth: 1, borderColor: '#e5e7eb', backgroundColor: '#f9fafb' },
   textInput: { flex: 1, backgroundColor: '#fff', borderWidth: 1, borderColor: '#d1d5db', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, marginHorizontal: 6 },

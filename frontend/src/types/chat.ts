@@ -7,4 +7,5 @@ export interface ChatMessage {
   createdAt: number;
   type?: 'text' | 'image' | 'audio';
   mediaUri?: string; // local or remote URI for image/audio
+  formUrl?: string; // optional URL to render in an embedded WebView
 }

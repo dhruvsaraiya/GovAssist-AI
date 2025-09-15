@@ -13,6 +13,7 @@ export interface BackendMessage {
   content: string;
   type: 'text' | 'image' | 'audio' | 'file';
   media_uri?: string | null;
+  form_url?: string | null;
 }
 
 export interface BackendChatResponse { messages: BackendMessage[] }

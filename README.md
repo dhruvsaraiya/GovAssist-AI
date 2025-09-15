@@ -39,15 +39,20 @@ npm start   # Opens Expo dev tools (press a for Android, i for iOS, w for web)
 ```
 
 ### Current Features
-* Chat screen with text messaging (local echo)
-* Image picker (gallery) stub adds image messages locally
-* Audio recording stub adds audio message placeholder
-* WebView screen ready for future form automation integration
+* Chat screen with text, image, and audio (multipart upload) integrated with backend echo API
+* Backend FastAPI `/api/chat` endpoint accepts text/image/audio and returns structured messages
+* Automatic detection of certain trigger phrases (e.g. "tax form", "passport form", "visa form") that returns a `form_url` in the assistant message
+* Phase 1 (implemented): Basic assistant-provided `form_url` contract (Pydantic `ChatMessage.form_url`) with allow‑listed government domains
+* Phase 2 (implemented): Draggable top-attached shutter (`TopFormShutter`) rendering the form inside a WebView while keeping the input bar always accessible
+* Health check endpoint and platform-aware (Android emulator) backend URL selection in frontend config
 
 ### Planned Enhancements
-* Connect to backend API for real responses
-* Persist conversation context & multi-turn state
-* Automated form filling in WebView based on chat intent & extracted entities
+* LLM-generated assistant responses instead of simple echo
+* Persist conversation context & multi-turn session management
+* Enhanced URL validation (strict allowlist, signature or server-side retrieval proxy)
+* Automated form field extraction & auto-fill within the WebView (accessibility-first design)
+* Offline caching / retry queue for messages & form progress
+* Security hardening (origin isolation, CSP headers for in-app browser) 
 
 ## Backend (FastAPI)
 
@@ -72,36 +77,36 @@ pytest -q
 ```
 
 ### API Summary
-`POST /api/chat` – Accepts form-data with either:
-* text (field: text, media_type=text)
-* file (field: file, media_type=image|audio) – returns echo placeholder
+`POST /api/chat` – Multipart form-data endpoint:
+* text: `text` + `media_type=text`
+* image/audio upload: `file` + `media_type=image|audio`
 
-Response contains an array of two messages (user + assistant echo) for now.
+Returns array `[user_msg, assistant_msg]` where `assistant_msg` may include:
+* `form_url` – If a trigger phrase or explicit `form:` URL (allow‑listed host) was detected.
+* `media_uri` – Placeholder reference for uploaded file (future: real storage location).
 
-## Connecting Frontend & Backend (Future)
-Update `src/services/api.ts` to call the backend:
-```
-export async function sendChatMessage(payload) {
-	const form = new FormData();
-	if (payload.type === 'text') { form.append('text', payload.content); form.append('media_type', 'text'); }
-	// handle image/audio with file blobs later
-	const res = await fetch('http://127.0.0.1:8000/api/chat', { method: 'POST', body: form });
-	return res.json();
-}
-```
+## Frontend <-> Backend Integration Notes
+* See `frontend/src/services/api.ts` for multipart implementation.
+* Android emulator uses `10.0.2.2` automatically (see `config.ts`). Override via `EXPO_PUBLIC_BACKEND_HOST` env var if needed.
+* When a `form_url` arrives, `ChatScreen` sets `activeFormUrl` and renders a draggable top shutter (`TopFormShutter`) WebView. Closing the shutter does not remove the historical message containing the URL.
+* Multiple future `form_url` messages will currently replace the active sheet with the newest form (simple heuristic).
 
 ## Development Notes
 * CORS is currently wide open (`*`) – restrict origins before production.
-* File upload handling is placeholder (no persistence or validation yet).
+* File upload handling is placeholder (no persistence or virus scanning yet).
+* `form_url` allowlist is naive substring-based; replace with robust domain & path validation before production.
 * Media URIs in responses are mock references – implement storage layer later.
+* Top shutter uses a minimal animated snap implementation; consider `@gorhom/bottom-sheet` (adapted for top usage) or a custom Reanimated solution for production-grade performance & accessibility.
 
 ## Next Steps / Roadmap
-1. Hook frontend chat to backend endpoint.
-2. Introduce conversation/session IDs.
-3. Integrate LLM (e.g., OpenAI / local model) for assistant responses.
-4. Intent extraction + entity mapping for government form fields.
-5. WebView automation layer to populate forms.
-6. Add secure auth / rate limiting.
+1. Conversation/session IDs & persistence.
+2. Integrate LLM for contextual assistant responses.
+3. Strong URL sanitization & signed proxy retrieval for forms.
+4. Intent extraction + entity mapping to form fields.
+5. WebView automation: DOM injection / accessibility tree parsing to populate fields.
+6. Form progress tracking & resume.
+7. Add secure auth / rate limiting & audit logging.
+8. Add lightweight analytics (anonymized) for flow optimization.
 
 ## License
 TBD.

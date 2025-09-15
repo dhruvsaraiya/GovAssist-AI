@@ -34,3 +34,13 @@ def test_chat_audio_upload():
     assert user['type'] == 'audio'
     assert user['content'] == 'sample.wav'
     assert assistant['content'].startswith('Echo:')
+
+def test_chat_form_url_trigger():
+    resp = client.post('/api/chat', data={'text': 'Please open the tax form for me', 'media_type': 'text'})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data['messages']) == 2
+    user, assistant = data['messages']
+    assert user['content'].startswith('Please open')
+    assert assistant.get('form_url') is not None
+    assert 'Opening form:' in assistant['content']

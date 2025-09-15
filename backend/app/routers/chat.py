@@ -1,6 +1,44 @@
 from fastapi import APIRouter, UploadFile, File, Form
 from typing import Optional
 from ..schemas.chat import ChatResponse, ChatMessage
+from urllib.parse import urlparse
+
+def extract_form_url(text: str) -> Optional[str]:
+    """Naive trigger detection for Phase 1.
+
+    Rules:
+      - If text contains pattern `form:` followed by a URL, extract it.
+      - Else if certain keywords appear, return a canned sample URL.
+    Apply minimal allowlist host check.
+    """
+    if not text:
+        return None
+    lowered = text.lower().strip()
+    # Direct pattern form:https://example
+    if 'form:' in lowered:
+        after = lowered.split('form:', 1)[1].strip().split()[0]
+        candidate = after
+    else:
+        candidate = None
+    # Keyword heuristics
+    if candidate is None:
+        keyword_map = {
+            'form': 'https://forms.office.com/Pages/ResponsePage.aspx?id=v4j5cvGGr0GRqy180BHbRztchRYH2iBPvTNZJs2KqEZUNjBUQ05SRUdLTldLMklNTzgwQjBVREZDQS4u',
+        }
+        for k, v in keyword_map.items():
+            if k in lowered:
+                candidate = v
+                break
+    if not candidate:
+        return None
+    # Basic validation
+    try:
+        parsed = urlparse(candidate)
+        if parsed.scheme not in {'http', 'https'}:
+            return None
+        return candidate
+    except Exception:
+        return None
 import logging
 
 logger = logging.getLogger(__name__)
@@ -49,9 +87,11 @@ async def chat(
         len(content or "")
     )
 
+    form_url = extract_form_url(content)
     assistant_msg = ChatMessage(
         role='assistant',
-        content=f"Echo: {content}",
-        type='text'
+        content=(f"Opening form: {form_url}" if form_url else f"Echo: {content}"),
+        type='text',
+        form_url=form_url
     )
     return ChatResponse(messages=[user_msg, assistant_msg])

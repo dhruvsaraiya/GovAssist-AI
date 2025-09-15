@@ -11,6 +11,8 @@ class ChatMessage(BaseModel):
     content: str
     type: MessageType = 'text'
     media_uri: Optional[str] = None
+    # Optional URL to a government or assistance form that the client can render in a WebView.
+    form_url: Optional[str] = None
 
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
