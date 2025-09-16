@@ -1,9 +1,10 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, KeyboardAvoidingView, Platform, StyleSheet, TextInput, TouchableOpacity, View, Text, Alert } from 'react-native';
 import { ChatMessage } from '../types/chat';
 import { MessageBubble } from '../components/MessageBubble';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
 import { Audio } from 'expo-av';
 import { sendChatMessage, BackendChatResponse } from '../services/api';
 import { BACKEND_URL } from '../config';
@@ -12,6 +13,7 @@ import { BACKEND_URL } from '../config';
 import FormWebView from '../components/FormWebView';
 import aadhaarMapping from '../forms/mappings/formAadhaar.json';
 import incomeMapping from '../forms/mappings/formIncome.json';
+import { createChatWebSocket, ChatWebSocket } from '../services/ws';
 
 export const ChatScreen: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([{
@@ -19,6 +21,9 @@ export const ChatScreen: React.FC = () => {
   }]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [wsState, setWsState] = useState<'connecting' | 'open' | 'closed'>('connecting');
+  const wsRef = useRef<ChatWebSocket | null>(null);
+  const streamingMsgRef = useRef<ChatMessage | null>(null);
   const [activeFormUrl, setActiveFormUrl] = useState<string | null>(null);
   const [activeFormMapping, setActiveFormMapping] = useState<Record<string, any> | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
@@ -66,19 +71,69 @@ export const ChatScreen: React.FC = () => {
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
   };
 
+  // Initialize websocket once
+  useEffect(() => {
+    const ws = createChatWebSocket({
+      onState: (s) => setWsState(s),
+      onDelta: (delta) => {
+        setMessages(prev => {
+          if (!streamingMsgRef.current) {
+            const msg: ChatMessage = { id: 'streaming-' + Date.now(), role: 'assistant', content: delta, createdAt: Date.now(), type: 'text' };
+            streamingMsgRef.current = msg;
+            return [...prev, msg];
+          } else {
+            streamingMsgRef.current.content += delta;
+            return [...prev];
+          }
+        });
+      },
+      onAssistantMessage: (m) => {
+        setMessages(prev => {
+          // finalize streaming message if exists
+          if (streamingMsgRef.current) {
+            streamingMsgRef.current = null;
+          }
+          const msg: ChatMessage = { id: m.id || 'assistant-' + Date.now(), role: 'assistant', content: m.content, createdAt: Date.now(), type: 'text', formUrl: m.form_url || undefined };
+          return [...prev, msg];
+        });
+      },
+      onFormOpen: (url) => {
+        setActiveFormUrl(url);
+        try {
+          const fname = url.split('/').pop() || '';
+          if (fname.includes('formAadhaar')) setActiveFormMapping(aadhaarMapping as any);
+          else if (fname.includes('formIncome')) setActiveFormMapping(incomeMapping as any);
+          else setActiveFormMapping(null);
+        } catch { setActiveFormMapping(null); }
+      },
+      onError: (err) => {
+        // eslint-disable-next-line no-console
+        console.warn('[ws] error', err);
+      },
+      debug: false
+    });
+    wsRef.current = ws;
+    return () => { ws.cleanup(); };
+  }, []);
+
   const sendMessage = useCallback(async () => {
     if (!input.trim() || loading) return;
-    setLoading(true);
-    try {
-      const resp = await sendChatMessage({ content: input.trim(), type: 'text' });
-      appendBackendMessages(resp);
-      setInput('');
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to send message');
-    } finally {
-      setLoading(false);
+    const text = input.trim();
+    setMessages(prev => [...prev, { id: 'user-' + Date.now(), role: 'user', content: text, createdAt: Date.now(), type: 'text' }]);
+    setInput('');
+    if (wsRef.current && wsState === 'open') {
+      wsRef.current.sendUserMessage(text);
+    } else {
+      // fallback to HTTP if websocket not ready
+      setLoading(true);
+      try {
+        const resp = await sendChatMessage({ content: text, type: 'text' });
+        appendBackendMessages(resp);
+      } catch (e: any) {
+        Alert.alert('Error', e.message || 'Failed to send message');
+      } finally { setLoading(false); }
     }
-  }, [input, loading]);
+  }, [input, loading, wsState]);
 
   const pickImage = useCallback(async () => {
     if (loading) return;
@@ -86,7 +141,20 @@ export const ChatScreen: React.FC = () => {
     if (!perm.granted) { Alert.alert('Permission required', 'Media library permission is needed'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.7 });
     if (result.canceled) return;
-    const asset = result.assets[0];
+    const asset = result.assets?.[0];
+    if (!asset || !asset.uri) { Alert.alert('Error', 'No image URI returned'); return; }
+    try {
+      const info = await FileSystem.getInfoAsync(asset.uri);
+      if (!info.exists || (info.size != null && info.size === 0)) {
+        // eslint-disable-next-line no-console
+        console.warn('[image] invalid file', asset.uri, info);
+        Alert.alert('Error', 'Selected image file is not accessible or empty');
+        return;
+      }
+    } catch (err) {
+      Alert.alert('Error', 'Could not verify image file');
+      return;
+    }
     setLoading(true);
     try {
       const resp = await sendChatMessage({ type: 'image', mediaUri: asset.uri });
@@ -96,7 +164,7 @@ export const ChatScreen: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [loading]);
+  }, [loading, appendBackendMessages]);
 
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
 
@@ -169,11 +237,12 @@ export const ChatScreen: React.FC = () => {
         </TouchableOpacity>
         <TextInput
           style={styles.textInput}
-            placeholder="Type a message"
+            placeholder={wsState === 'open' ? 'Type a message' : `Connecting... (${wsState})`}
             value={input}
             onChangeText={setInput}
             onSubmitEditing={sendMessage}
             returnKeyType="send"
+            editable={wsState !== 'connecting'}
         />
         <TouchableOpacity style={[styles.sendBtn, loading && { opacity: 0.5 }]} onPress={sendMessage} disabled={loading}>
           <Ionicons name={loading ? 'hourglass-outline' : 'send'} size={18} color="#fff" />

@@ -14,3 +14,18 @@ UX -> gives ack to backend
 Backend -> tells model
 Model: prepares a question for user for the next field.
 ....and continues....
+
+------ FLOW --------------
+- first give me a sequence diagram in new file under docs for the whole end to end flow of user communication where 
+  - user puts a message in frontend
+  - frontend gives it to backend
+  - backend along with that message and system prompt asks ai
+  - ai sugests the form, gives form summary, and asks user to provide answer for first form field
+    - this includes model -> backend -> ui interaction
+  - user gives answer
+  - backend gives it to model
+  - model responds with structured schema and value in json, that is passed to UI, that updates the form
+  - frontend gives next field to backend and model
+  - model asks next question
+  - user answers and flow continues...
+

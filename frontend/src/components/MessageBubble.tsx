@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, Image } from 'react-native';
+import { dbg } from '../services/debug';
 import { Audio } from 'expo-av';
 import { ChatMessage } from '../types/chat';
 
@@ -10,9 +11,9 @@ export const MessageBubble: React.FC<Props> = ({ message }) => {
   return (
     <View style={[styles.container, isUser ? styles.userAlign : styles.assistantAlign]}>
       <View style={[styles.bubble, isUser ? styles.userBubble : styles.assistantBubble]}>        
-        {message.type === 'image' && message.mediaUri && (
+        {message.type === 'image' && message.mediaUri && /^\w+:/.test(message.mediaUri) ? (
           <Image source={{ uri: message.mediaUri }} style={styles.image} />
-        )}
+        ) : (message.type === 'image' && message.mediaUri ? (dbg('image', 'skipping invalid uri', message.mediaUri), null) : null)}
         {message.type === 'audio' && (
           <Text style={styles.audioPlaceholder}>[Audio message]</Text>
         )}
