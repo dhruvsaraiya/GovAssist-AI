@@ -99,6 +99,11 @@ export class ChatWebSocket {
         break;
       case 'assistant_message':
         this.listeners.onAssistantMessage?.(evt.message);
+        // Check if the message contains form information
+        if (evt.form && evt.form.url) {
+          const formUrl = `http://${BACKEND_HOST}:${BACKEND_PORT}${evt.form.url}`;
+          this.listeners.onFormOpen?.(formUrl);
+        }
         break;
       case 'form_open':
         // Ensure form URLs use HTTP protocol

@@ -24,9 +24,16 @@ FRONTEND_ORIGINS = [
     "http://127.0.0.1:19006",
 ]
 
+allow_all = os.getenv("BACKEND_ALLOW_ALL_ORIGINS", "0").lower() in {"1", "true", "yes"}
+if allow_all:
+    logging.getLogger(__name__).warning("CORS: Allowing ALL origins (BACKEND_ALLOW_ALL_ORIGINS=1) - dev only!")
+    origins = ["*"]
+else:
+    origins = FRONTEND_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=FRONTEND_ORIGINS,
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
