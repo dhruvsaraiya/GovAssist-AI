@@ -110,7 +110,22 @@ async def websocket_chat(ws: WebSocket):  # type: ignore
                 await _safe_send(ws, {"type": "assistant_message", "message": assistant_msg.dict()})
                 logger.info("[ws] << form_open url=%s", form_url)
                 continue
-            # Streaming reply from model
+            # Streaming reply from model with system prompt
+            system_prompt = """You are an AI assistant helping users fill out government forms in India.
+Your job is to:
+1. Understand which form the user needs (Aadhaar or Income Certificate)
+2. Guide them through filling each field by asking questions one at a time
+3. Use the set_field_value tool to auto-fill the form with their answers
+4. Move to the next field using get_next_field tool
+5. Use open_form tool when you identify which form they need
+
+Available forms:
+- Aadhaar Update Form (formAadhaar): For updating Aadhaar card details
+- Income Certificate Form (formIncome): For applying for income certificate
+
+Be conversational but focused on completing the form efficiently."""
+
+            full_prompt = f"{system_prompt}\n\nUser: {content}\nAssistant:"
             accum: list[str] = []
 
             async def on_delta(delta: str):
@@ -136,12 +151,58 @@ async def websocket_chat(ws: WebSocket):  # type: ignore
                 elif name == 'set_field_value':
                     await _safe_send(ws, {"type": "field_set", "field": (args or {}).get('field'), "value": (args or {}).get('value')})
                 elif name == 'get_next_field':
-                    # Placeholder: in future consult form schema progression.
-                    await _safe_send(ws, {"type": "next_field", "field": "<unimplemented>"})
+                    from bs4 import BeautifulSoup
+                    import os
+
+                    try:
+                        # Get the current form's HTML
+                        forms_dir = os.path.join(os.path.dirname(__file__), "..", "..", "static", "forms")
+                        form_path = os.path.join(forms_dir, "formAadhaar.html")  # TODO: Make this dynamic based on active form
+                        
+                        with open(form_path, 'r', encoding='utf-8') as f:
+                            soup = BeautifulSoup(f.read(), 'html.parser')
+                        
+                        # Find all form fields (inputs and selects)
+                        fields = []
+                        for element in soup.find_all(['input', 'select']):
+                            if not element.get('id') or element.get('type') == 'button':
+                                continue
+                                
+                            field_id = element.get('id')
+                            label_text = ""
+                            label = soup.find('label', {'for': field_id})
+                            if label:
+                                label_text = label.get_text().strip()
+                            
+                            field_meta = {
+                                "id": field_id,
+                                "label": label_text,
+                                "type": element.name if element.name == 'select' else element.get('type', 'text'),
+                                "required": element.get('required') is not None,
+                            }
+                            
+                            # Add options for select elements
+                            if element.name == 'select':
+                                options = [opt.get_text().strip() for opt in element.find_all('option') if opt.get_text().strip()]
+                                field_meta["options"] = options
+                            
+                            fields.append(field_meta)
+                            
+                        # For now, just return the first field (in future, track progress)
+                        if fields:
+                            await _safe_send(ws, {
+                                "type": "next_field",
+                                "field": fields[0]["id"],
+                                "metadata": fields[0]
+                            })
+                        
+                    except Exception as e:
+                        logger.error("Failed to get next field: %s", e)
+                        await _safe_send(ws, {"type": "error", "error": "failed_get_next_field"})
 
             full_text = await stream_assistant_reply(content, on_delta=on_delta, on_tool=on_tool)
             if not full_text:
-                full_text = f"Echo: {content}" if content else "(no response)"
+                full_text = "I apologize, I'm having trouble connecting to my AI service. Please try again in a moment."
             assistant_msg = ChatMessage(role='assistant', content=full_text)  # type: ignore
             await _safe_send(ws, {"type": "assistant_message", "message": assistant_msg.dict()})
             logger.info("[ws] << assistant_message len=%d preview=%r", len(full_text), full_text[:120])

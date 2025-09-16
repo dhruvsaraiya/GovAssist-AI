@@ -95,6 +95,9 @@ class RealtimeConnectionManager:
                 "session": {
                     "output_modalities": ["text"],
                     "modalities": ["text"],
+                    "model": "gpt-4",  # Explicitly set model
+                    "stream": True,  # Enable streaming
+                    "temperature": 0.7,  # Add temperature for more natural responses
                     # Tools follow OpenAI function-style schema so that model can emit
                     # tool calls we can intercept (response.tool_calls events)
                     "tools": [
@@ -195,7 +198,16 @@ class RealtimeConnectionManager:
             parts: list[str] = []
             try:
                 logger.info("[realtime] >> prompt(stream) len=%d preview=%r", len(text), text[:120])
-                await ws.send(json.dumps({"type": "response.create", "response": {"instructions": text}}))
+                # Format prompt as a chat conversation
+                await ws.send(json.dumps({
+                    "type": "response.create",
+                    "response": {
+                        "messages": [
+                            {"role": "system", "content": "You are a helpful AI assistant."},
+                            {"role": "user", "content": text}
+                        ]
+                    }
+                }))
                 async with asyncio.timeout(timeout):
                     async for raw in ws:
                         try:
@@ -235,14 +247,18 @@ class RealtimeConnectionManager:
                         elif et == "response.done":
                             break
             except InvalidStatusCode as isc:
-                logger.error("[realtime] http_status=%s during stream url=%s", getattr(isc, 'status_code', 'n/a'), self._url)
+                logger.error("[realtime] http_status=%s during stream url=%s headers=%s", 
+                           getattr(isc, 'status_code', 'n/a'), 
+                           self._url,
+                           await self._build_headers())
             except Exception as e:
-                logger.info("[realtime] stream_failed err=%s url=%s", e, self._url)
+                logger.error("[realtime] stream_failed err=%s url=%s headers=%s", 
+                          str(e), self._url, await self._build_headers())
                 try:
                     if ws and not ws.closed:
                         await ws.close()
-                except Exception:
-                    pass
+                except Exception as close_err:
+                    logger.error("[realtime] close_failed err=%s", close_err)
                 self._ws = None
                 return ""
             self._last_used = time.time()
