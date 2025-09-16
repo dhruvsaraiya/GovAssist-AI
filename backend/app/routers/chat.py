@@ -94,28 +94,18 @@ class AzureRealtimeBridge:
 			"type": "session.update",
 			"session": {
 				"modalities": ["text"],
-				"instructions": """You are a concise assistant helping users with government form guidance. Always respond in English.
+				"instructions": """You are a government forms assistant. Respond in English only.
 
-IMPORTANT: I have access to these specific forms that I can show users directly:
-1. Aadhaar Update Form - for identity card updates, corrections, address changes
-2. Mudra Loan Application Form - for business loans, income certificates, financial assistance
+MANDATORY: When users ask for forms, you MUST use this format:
 
-CRITICAL RULE: When a user asks for ANY of these forms or mentions related keywords, you MUST:
-1. Provide a brief helpful response about the form
-2. Then add this EXACT marker at the end: ##FORM:[formname]##
+For "mudra loan" requests: End your response with ##FORM:income##
+For "aadhaar" requests: End your response with ##FORM:aadhaar##
 
-Form Detection Keywords:
-- For Aadhaar form: aadhaar, aadhar, identity, registration, update, address change, demographic update
-- For Mudra/Income form: mudra, loan, business loan, income, financial help, PMMY, business application
-
-Examples of correct responses:
+Example:
 User: "give me mudra loan form"
-Response: "I can help you with the Mudra loan application! This form is for the Pradhan Mantri Mudra Yojana which provides collateral-free loans up to ₹10 lakh for small businesses. ##FORM:income##"
+You: "I'll help you with the Mudra loan form for business financing. ##FORM:income##"
 
-User: "I need aadhaar update form" 
-Response: "I'll help you with the Aadhaar update form. This form allows you to update your demographic details, address, or other information in your Aadhaar card. ##FORM:aadhaar##"
-
-Always include the ##FORM:[formname]## marker when users request these forms.""",
+ALWAYS include the ##FORM:## marker when users request forms.""",
 				"tool_choice": "none",
 			},
 		}
@@ -224,12 +214,15 @@ Always include the ##FORM:[formname]## marker when users request these forms."""
 	def _extract_form_from_text(self, text: str) -> tuple[str, Optional[str]]:
 		"""Extract form marker from text and return clean text + form name."""
 		import re
+		logger.info("[form-debug] Checking text for form markers: %r", text[:200])
 		form_pattern = r'##FORM:(\w+)##'
 		match = re.search(form_pattern, text)
 		if match:
 			form_name = match.group(1).lower()
 			clean_text = re.sub(form_pattern, '', text).strip()
+			logger.info("[form-debug] Found form marker: %s", form_name)
 			return clean_text, form_name
+		logger.info("[form-debug] No form marker found in text")
 		return text, None
 
 	def _get_form_url(self, form_name: str) -> str:
