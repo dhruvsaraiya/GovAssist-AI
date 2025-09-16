@@ -15,6 +15,8 @@ backend/.venv/
 .env
 .env.local
 
+**/.venv
+
 # OS / Editor
 .DS_Store
 Thumbs.db

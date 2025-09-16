@@ -101,7 +101,9 @@ export class ChatWebSocket {
         this.listeners.onAssistantMessage?.(evt.message);
         break;
       case 'form_open':
-        this.listeners.onFormOpen?.(evt.url);
+        // Ensure form URLs use HTTP protocol
+        const formUrl = evt.url.replace(/^ws:\/\//, 'http://');
+        this.listeners.onFormOpen?.(formUrl);
         break;
       case 'error':
         this.listeners.onError?.(evt.error);

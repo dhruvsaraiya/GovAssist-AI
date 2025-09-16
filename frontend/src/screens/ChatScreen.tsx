@@ -229,10 +229,16 @@ export const ChatScreen: React.FC = () => {
         <TouchableOpacity style={styles.iconBtn} onPress={toggleRecording}>
           <Ionicons name={recording ? 'stop-circle-outline' : 'mic-outline'} size={22} color={recording ? '#dc2626' : '#374151'} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.iconBtn} onPress={() => { setActiveFormUrl(`${BACKEND_URL}/forms/formAadhaar.html`); setActiveFormMapping(aadhaarMapping as any); }}>
+        <TouchableOpacity style={styles.iconBtn} onPress={() => { 
+            setActiveFormUrl(`${BACKEND_URL}/forms/formAadhaar.html`); 
+            setActiveFormMapping(aadhaarMapping as any); 
+          }}>
           <Ionicons name="document-text-outline" size={20} color="#374151" />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.iconBtn} onPress={() => { setActiveFormUrl(`${BACKEND_URL}/forms/formIncome.html`); setActiveFormMapping(incomeMapping as any); }}>
+        <TouchableOpacity style={styles.iconBtn} onPress={() => { 
+            setActiveFormUrl(`${BACKEND_URL}/forms/formIncome.html`); 
+            setActiveFormMapping(incomeMapping as any); 
+          }}>
           <Ionicons name="list-outline" size={20} color="#374151" />
         </TouchableOpacity>
         <TextInput

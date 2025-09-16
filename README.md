@@ -63,7 +63,7 @@ npm start   # Opens Expo dev tools (press a for Android, i for iOS, w for web)
 ### Setup & Run
 ```
 cd backend
-python -m venv .venv
+python -m venv .venv  (To use python 3.11 - py -3.11 -m venv .venv)
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
