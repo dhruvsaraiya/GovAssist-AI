@@ -80,13 +80,38 @@ class AzureRealtimeBridge:
 		key = self.settings.azure_openai_key or self.settings.azure_openai_api_key
 		if not key:
 			raise RuntimeError("Azure OpenAI key not configured (AZURE_OPENAI_KEY or AZURE_OPENAI_API_KEY)")
-		headers = {
-			"api-key": key,
-			"OpenAI-Beta": "realtime=v1",
-		}
+		
+		# Prepare headers for websockets.connect() - not for create_connection()
+		headers = [
+			("api-key", key),
+			("OpenAI-Beta", "realtime=v1"),
+		]
+		
 		logger.info("[azure] Connecting realtime websocket -> %s", url)
 		connect_started = time.perf_counter()
-		self.ws = await websockets.connect(url, additional_headers=headers, max_size=2**23)  # type: ignore
+		
+		try:
+			# Use additional_headers (list of tuples) for older websockets versions
+			# or extra_headers (dict) for newer versions
+			self.ws = await websockets.connect(
+				url, 
+				additional_headers=headers,
+				max_size=2**23,
+				open_timeout=15,
+				close_timeout=5
+			)
+		except TypeError as te:
+			logger.warning("[azure] additional_headers failed (%s), trying extra_headers", te)
+			# Fallback to extra_headers with dict format
+			headers_dict = {k: v for k, v in headers}
+			self.ws = await websockets.connect(
+				url, 
+				extra_headers=headers_dict,
+				max_size=2**23,
+				open_timeout=15,
+				close_timeout=5
+			)
+		
 		logger.info("[azure] Connected (%.2f ms)", (time.perf_counter() - connect_started) * 1000)
 
 		# Configure session (minimal)
@@ -94,18 +119,19 @@ class AzureRealtimeBridge:
 			"type": "session.update",
 			"session": {
 				"modalities": ["text"],
-				"instructions": """You are a government forms assistant. Respond in English only.
+				"instructions": """You are a helpful government forms assistant. When users request forms, you MUST include the exact form marker at the end of your response:
 
-MANDATORY: When users ask for forms, you MUST use this format:
+For Aadhaar card requests: Always end with ##FORM:aadhaar##
+For Mudra loan or income certificate requests: Always end with ##FORM:income##
 
-For "mudra loan" requests: End your response with ##FORM:income##
-For "aadhaar" requests: End your response with ##FORM:aadhaar##
+Examples:
+User: "I need aadhaar form"
+Assistant: "I'll help you with the Aadhaar card application form. ##FORM:aadhaar##"
 
-Example:
-User: "give me mudra loan form"
-You: "I'll help you with the Mudra loan form for business financing. ##FORM:income##"
+User: "mudra loan form please" 
+Assistant: "Here's the Mudra loan application form for small business financing. ##FORM:income##"
 
-ALWAYS include the ##FORM:## marker when users request forms.""",
+IMPORTANT: Always include the ##FORM:## marker exactly as shown above.""",
 				"tool_choice": "none",
 			},
 		}
@@ -214,24 +240,45 @@ ALWAYS include the ##FORM:## marker when users request forms.""",
 	def _extract_form_from_text(self, text: str) -> tuple[str, Optional[str]]:
 		"""Extract form marker from text and return clean text + form name."""
 		import re
-		logger.info("[form-debug] Checking text for form markers: %r", text[:200])
+		logger.info("[form-debug] Checking text for form markers: %r", text[-300:])  # Check end of text
+		
+		# Look for ##FORM:formname## pattern (case insensitive)
 		form_pattern = r'##FORM:(\w+)##'
-		match = re.search(form_pattern, text)
+		match = re.search(form_pattern, text, re.IGNORECASE)
+		
 		if match:
 			form_name = match.group(1).lower()
-			clean_text = re.sub(form_pattern, '', text).strip()
+			clean_text = re.sub(form_pattern, '', text, flags=re.IGNORECASE).strip()
 			logger.info("[form-debug] Found form marker: %s", form_name)
 			return clean_text, form_name
-		logger.info("[form-debug] No form marker found in text")
+			
+		# Fallback: keyword detection in the text itself
+		text_lower = text.lower()
+		detected_form = None
+		
+		if any(keyword in text_lower for keyword in ['aadhaar', 'aadhar', 'adhaar']):
+			detected_form = 'aadhaar'
+		elif any(keyword in text_lower for keyword in ['mudra', 'income', 'loan']):
+			detected_form = 'income'
+			
+		if detected_form:
+			logger.info("[form-debug] Detected form via keyword matching: %s", detected_form)
+			return text, detected_form
+			
+		logger.info("[form-debug] No form marker or keywords found in text")
 		return text, None
 
 	def _get_form_url(self, form_name: str) -> str:
 		"""Get the URL for a specific form."""
 		form_urls = {
 			"aadhaar": "/forms/formAadhaar.html",
-			"income": "/forms/formIncome.html"
+			"aadhar": "/forms/formAadhaar.html",  # Alternative spelling
+			"income": "/forms/formIncome.html",
+			"mudra": "/forms/formIncome.html"  # Mudra loan uses income form
 		}
-		return form_urls.get(form_name, "")
+		url = form_urls.get(form_name, "")
+		logger.info("[form-debug] Form URL mapping: %s -> %s", form_name, url)
+		return url
 
 	async def _send_assistant_message(self, text: str, message_id: Optional[str] = None, event_type: str = ""):
 		"""Send assistant message to frontend and mark response as sent."""
