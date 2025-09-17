@@ -31,6 +31,12 @@ export const ChatScreen: React.FC = () => {
   const formWebViewRef = useRef<any>(null);
 
   const appendBackendMessages = (resp: BackendChatResponse) => {
+    // Guard against undefined or null messages array
+    if (!resp || !resp.messages || !Array.isArray(resp.messages)) {
+      console.warn('[chat] Invalid response format:', resp);
+      return;
+    }
+    
     let newFormUrl: string | null = null;
     setMessages(prev => {
       const existingIds = new Set(prev.map(p => p.id));
@@ -95,8 +101,69 @@ export const ChatScreen: React.FC = () => {
           if (streamingMsgRef.current) {
             streamingMsgRef.current = null;
           }
-          const msg: ChatMessage = { id: m.id || 'assistant-' + Date.now(), role: 'assistant', content: m.content, createdAt: Date.now(), type: 'text', formUrl: m.form_url || undefined };
+          const msg: ChatMessage = { 
+            id: m.id || 'assistant-' + Date.now(), 
+            role: 'assistant', 
+            content: m.content, 
+            createdAt: Date.now(), 
+            type: 'text', 
+            formUrl: m.form_url || undefined 
+          };
+          
+          // Handle form activation from websocket message
+          if (m.form_url) {
+            console.log('[chat] activating form url from websocket', m.form_url);
+            setActiveFormUrl(m.form_url);
+            try {
+              const fname = String(m.form_url).split('/').pop() || '';
+              if (fname.includes('formAadhaar')) setActiveFormMapping(aadhaarMapping as any);
+              else if (fname.includes('formIncome')) setActiveFormMapping(incomeMapping as any);
+              else setActiveFormMapping(null);
+            } catch (e) { setActiveFormMapping(null); }
+          }
+          
           return [...prev, msg];
+        });
+      },
+      onTranscript: (transcript) => {
+        // Handle voice message transcript from websocket
+        console.log('[ws] transcript received:', transcript);
+        // Replace the "Processing..." message with the actual transcript
+        setMessages(prev => {
+          const filtered = prev.filter(m => !m.id.startsWith('user-audio-processing-'));
+          return [...filtered, { 
+            id: 'user-transcript-' + Date.now(), 
+            role: 'user', 
+            content: `🎤 "${transcript}"`, 
+            createdAt: Date.now(), 
+            type: 'text' 
+          }];
+        });
+      },
+      onSpeechStarted: () => {
+        console.log('[ws] speech started');
+        setMessages(prev => {
+          const filtered = prev.filter(m => !m.id.startsWith('user-audio-processing-'));
+          return [...filtered, { 
+            id: 'user-audio-processing-' + Date.now(), 
+            role: 'user', 
+            content: '🎤 Listening...', 
+            createdAt: Date.now(), 
+            type: 'text' 
+          }];
+        });
+      },
+      onSpeechStopped: () => {
+        console.log('[ws] speech stopped');
+        setMessages(prev => {
+          const filtered = prev.filter(m => !m.id.startsWith('user-audio-processing-'));
+          return [...filtered, { 
+            id: 'user-audio-processing-' + Date.now(), 
+            role: 'user', 
+            content: '🎤 Processing speech...', 
+            createdAt: Date.now(), 
+            type: 'text' 
+          }];
         });
       },
       onFormOpen: (url) => {
@@ -151,10 +218,23 @@ export const ChatScreen: React.FC = () => {
         }]);
       },
       onError: (err) => {
-        // eslint-disable-next-line no-console
         console.warn('[ws] error', err);
+        // Clear any processing messages on error
+        setMessages(prev => {
+          const filtered = prev.filter(m => 
+            !m.id.startsWith('user-audio-processing-') && 
+            !m.id.startsWith('recording-tip-')
+          );
+          return [...filtered, {
+            id: 'error-' + Date.now(),
+            role: 'assistant',
+            content: `Audio processing error: ${err}. Please try speaking again or type your message.`,
+            createdAt: Date.now(),
+            type: 'text'
+          }];
+        });
       },
-      debug: false
+      debug: true  // Enable debug logging
     });
     wsRef.current = ws;
     return () => { ws.cleanup(); };
@@ -219,6 +299,16 @@ export const ChatScreen: React.FC = () => {
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
       const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       setRecording(recording);
+      
+      // Show helpful message about recording
+      setMessages(prev => [...prev, {
+        id: 'recording-tip-' + Date.now(),
+        role: 'assistant',
+        content: '🎤 Recording... Please speak clearly for at least 2-3 seconds for best results.',
+        createdAt: Date.now(),
+        type: 'text'
+      }]);
+      
     } catch (e) {
       Alert.alert('Error', 'Could not start recording');
     }
@@ -226,20 +316,117 @@ export const ChatScreen: React.FC = () => {
 
   const stopRecording = useCallback(async () => {
     if (!recording) return;
+    
+    // Remove recording tip message
+    setMessages(prev => prev.filter(m => !m.id.startsWith('recording-tip-')));
+    
     try {
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
       if (!uri) return;
-      setLoading(true);
-      const resp = await sendChatMessage({ type: 'audio', mediaUri: uri });
-      appendBackendMessages(resp);
+      
+      // Check recording duration
+      const status = await recording.getStatusAsync();
+      if (status.canRecord === false && status.durationMillis && status.durationMillis < 2000) {
+        setMessages(prev => [...prev, {
+          id: 'audio-too-short-' + Date.now(),
+          role: 'assistant',
+          content: '⚠️ Recording too short. Please record for at least 3-4 seconds for better voice recognition.',
+          createdAt: Date.now(),
+          type: 'text'
+        }]);
+        return;
+      }
+      
+      // Send audio via websocket for AI interaction
+      if (wsRef.current && wsState === 'open') {
+        try {
+          // Read audio file as binary data using fetch
+          const response = await fetch(uri);
+          const arrayBuffer = await response.arrayBuffer();
+          const binaryData = new Uint8Array(arrayBuffer);
+          
+          console.log('[audio] Sending audio data, size:', binaryData.length, 'bytes');
+          
+          // Send binary audio data to websocket
+          const rawWs = wsRef.current.websocket;
+          if (rawWs && rawWs.readyState === WebSocket.OPEN) {
+            rawWs.send(binaryData);
+            
+            // Show user message indicating audio was sent
+            setMessages(prev => [...prev, { 
+              id: 'user-audio-processing-' + Date.now(), 
+              role: 'user', 
+              content: '🎤 Processing voice message... (Please speak for at least 2-3 seconds)', 
+              createdAt: Date.now(), 
+              type: 'text' 
+            }]);
+            
+            console.log('[audio] Audio sent via websocket successfully');
+          } else {
+            throw new Error('WebSocket not open');
+          }
+        } catch (e) {
+          console.error('Failed to send audio via websocket:', e);
+          
+          // Remove processing message and show error
+          setMessages(prev => {
+            const filtered = prev.filter(m => !m.id.startsWith('user-audio-processing-'));
+            return [...filtered, {
+              id: 'audio-error-' + Date.now(),
+              role: 'assistant',
+              content: 'Sorry, there was an issue processing your voice message. Please try typing your message instead.',
+              createdAt: Date.now(),
+              type: 'text'
+            }];
+          });
+        }
+      } else {
+        // Fallback to HTTP POST for transcription only (not AI interaction)
+        setLoading(true);
+        try {
+          const resp = await sendChatMessage({ type: 'audio', mediaUri: uri });
+          const { transcript, success, error } = resp as BackendChatResponse & { transcript?: string; success?: boolean; error?: string };
+          
+          // Check if response is successful and has transcript
+          if (success && transcript) {
+            // Send transcript as text message via websocket for AI interaction
+            if (wsRef.current && wsState === 'open') {
+              wsRef.current.sendUserMessage(transcript);
+            } else {
+              // Double fallback - use HTTP for both transcription and AI
+              const chatResp = await sendChatMessage({ content: transcript, type: 'text' });
+              if (chatResp && chatResp.messages && Array.isArray(chatResp.messages)) {
+                appendBackendMessages(chatResp);
+              }
+            }
+            
+            // Show user message with transcript
+            setMessages(prev => [...prev, { 
+              id: 'user-transcript-' + Date.now(), 
+              role: 'user', 
+              content: `🎤 "${transcript}"`, 
+              createdAt: Date.now(), 
+              type: 'text' 
+            }]);
+          } else if (error) {
+            Alert.alert('Audio Error', error);
+          } else {
+            Alert.alert('Error', 'Could not process audio');
+          }
+        } catch (e: any) {
+          Alert.alert('Error', e.message || 'Could not process audio');
+        } finally {
+          setLoading(false);
+        }
+      }
     } catch (e) {
-      Alert.alert('Error', 'Could not stop/send audio');
+      console.error('Error in stopRecording:', e);
+      Alert.alert('Error', 'Could not stop recording');
     } finally {
       setRecording(null);
-      setLoading(false);
     }
-  }, [recording]);
+  }, [recording, wsState, appendBackendMessages]);
 
   const toggleRecording = useCallback(() => {
     if (recording) {

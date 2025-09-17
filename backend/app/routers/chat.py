@@ -25,6 +25,15 @@ import websockets
 from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import JSONResponse
+from fastapi import UploadFile, File, Form, Request
+import tempfile
+from pathlib import Path
+import base64
+# Try Azure OpenAI client (optional)
+try:
+    from openai import AzureOpenAI  # type: ignore
+except ImportError:
+    AzureOpenAI = None
 from ..config import get_settings, Settings
 from ..form_manager import form_field_manager
 
@@ -32,6 +41,11 @@ from ..form_manager import form_field_manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+# WELCOME_GREETING_MESSAGE = (
+#     "Provide a brief, friendly welcome letting the user know you can help with government forms "
+#     "and form filling. Do NOT trigger or mention any specific form yet; just ask how you can help."
+# )
 
 system_prompt = """
 You are a government services assistant that helps users access official forms and fill them step by step.
@@ -190,29 +204,23 @@ class AzureRealtimeBridge:
 
         logger.info("[azure] Connected (%.2f ms)", (time.perf_counter() - connect_started) * 1000)
 
-        # Configure session (minimal)
+        # Configure session for text only to avoid audio format issues
+        # We'll handle audio via Whisper transcription instead
         session_cfg = {
             "type": "session.update",
             "session": {
-                "modalities": ["text"],
+                "modalities": ["text"],  # Use text only for now
+                "instructions": system_prompt,
+                "voice": "alloy",
                 "tool_choice": "none",
             },
         }
         logger.info("[azure->] session.update: %s", json.dumps(session_cfg, ensure_ascii=False))
         await self.ws.send(json.dumps(session_cfg))  # type: ignore
 
-        # Send system instructions once
-        sys_msg = {
-            "type": "conversation.item.create",
-            "item": {
-                "role": "system",
-                "type": "message",
-                "content": [{"type": "input_text", "text": system_prompt}],
-            },
-        }
-        await self.ws.send(json.dumps(sys_msg))
+        # Don't send separate system instructions since they're in session config
         self._system_sent = True
-        logger.info("[azure->] Sent system instructions once")
+        logger.info("[azure->] Session configured for text mode")
 
         # Start background receiver
         self._recv_task = asyncio.create_task(self._receiver_loop())
@@ -232,6 +240,9 @@ class AzureRealtimeBridge:
         except Exception as e:
             if not self._closing:
                 logger.warning("[azure] Receiver loop stopped: %s", e)
+        except:  # Catch any other exceptions (including ConnectionClosed, etc.)
+            if not self._closing:
+                logger.warning("[azure] Receiver loop stopped with unexpected error")
 
     async def _handle_event(self, event: dict):
         etype = event.get("type")
@@ -243,7 +254,44 @@ class AzureRealtimeBridge:
             self._response_sent = False
             self._ai_responding = True
 
-        if etype == "response.output_text.delta":
+        # Handle input audio buffer events
+        if etype == "input_audio_buffer.speech_started":
+            logger.info("[azure] Speech started detected")
+            await self._emit_frontend({"type": "speech_started"})
+
+        elif etype == "input_audio_buffer.speech_stopped":
+            logger.info("[azure] Speech stopped detected")
+            await self._emit_frontend({"type": "speech_stopped"})
+
+        elif etype == "input_audio_buffer.committed":
+            logger.info("[azure] Audio buffer committed successfully")
+
+        # Handle audio transcription from realtime API
+        elif etype == "conversation.item.input_audio_transcription.completed":
+            transcript = event.get("transcript", "")
+            if transcript:
+                logger.info("[azure] Audio transcription completed: '%s'", transcript[:100])
+                # Send transcript to frontend
+                await self._emit_frontend({"type": "transcript", "transcript": transcript})
+                # Process transcript as user input for form filling
+                await self._process_transcribed_input(transcript)
+
+        elif etype == "conversation.item.input_audio_transcription.failed":
+            error = event.get("error", {}).get("message", "transcription_failed")
+            logger.error("[azure] Audio transcription failed: %s", error)
+            await self._emit_frontend({"type": "error", "error": f"transcription_failed:{error}"})
+
+        # Handle response generation events
+        elif etype == "response.created":
+            logger.info("[azure] Response creation started")
+
+        elif etype == "response.output_item.added":
+            logger.info("[azure] Response output item added")
+
+        elif etype == "response.content_part.added":
+            logger.info("[azure] Response content part added")
+
+        elif etype == "response.output_text.delta":
             delta = event.get("delta", "")
             if delta:
                 self._response_buffer.append(delta)
@@ -267,7 +315,6 @@ class AzureRealtimeBridge:
                 await self._send_assistant_message(full, event_type="buffered_fallback")
             
             # Mark AI as no longer responding and process any pending requests
-            # Only do this if no message was sent (avoid double processing)
             if not self._response_sent:
                 self._ai_responding = False
                 await self._process_pending_requests()
@@ -278,7 +325,92 @@ class AzureRealtimeBridge:
             await self._emit_frontend({"type": "error", "error": err_msg})
         else:
             logger.debug("[azure] Ignored event type: %s", etype)
-        return
+
+    async def _process_transcribed_input(self, transcript: str):
+        """Process transcribed audio input like a regular user message."""
+        logger.info(f"[azure] Processing transcribed input: '{transcript}'")
+        
+        # Check if we're waiting for a form field answer
+        if self._awaiting_field_answer and self._form_session_active:
+            logger.info(f"[azure] Processing transcript as field answer")
+            self._awaiting_field_answer = False
+            success = await self._process_field_answer(transcript)
+            if success:
+                logger.info(f"[azure] Transcript field answer processed successfully")
+                return  # Field was processed, don't send to AI
+            else:
+                logger.info(f"[azure] Transcript field answer processing failed, will send to AI")
+        
+        # If not a field answer or field processing failed, send to AI for response
+        logger.info(f"[azure] Sending transcript to AI for response generation")
+        await self.send_user_message(transcript)
+
+    async def send_audio_chunk(self, audio_data: bytes):
+        """Process audio via Whisper transcription instead of realtime API."""
+        logger.info(f"[azure] Processing audio chunk via Whisper transcription, size: {len(audio_data)} bytes")
+        
+        # Use the existing transcription logic from the POST endpoint
+        if AzureOpenAI is None:
+            raise RuntimeError("AzureOpenAI SDK not available for transcription")
+        
+        if not self.settings.azure_openai_endpoint or not (self.settings.azure_openai_key or self.settings.azure_openai_api_key):
+            raise RuntimeError("Azure OpenAI not configured for audio")
+        
+        audio_deployment = (
+            getattr(self.settings, "azure_openai_whisper_deployment", None)
+            or getattr(self.settings, "azure_openai_audio_deployment", None)
+            or "whisper"
+        )
+        
+        try:
+            client = AzureOpenAI(
+                api_key=(self.settings.azure_openai_key or self.settings.azure_openai_api_key),
+                api_version=self.settings.openai_api_version,
+                azure_endpoint=self.settings.azure_openai_endpoint,
+            )
+            
+            # Save audio data to temporary file
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
+                tmp.write(audio_data)
+                tmp_path = tmp.name
+            
+            # Transcribe the audio
+            with open(tmp_path, "rb") as audio_f:
+                result = client.audio.transcriptions.create(
+                    model=audio_deployment,
+                    file=audio_f,
+                    response_format="json"
+                )
+            
+            transcript = getattr(result, "text", None) or (isinstance(result, dict) and result.get("text"))
+            
+            # Clean up temp file
+            import os
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+            
+            if transcript and transcript.strip():
+                logger.info(f"[azure] Whisper transcription completed: '{transcript[:100]}'")
+                # Send transcript to frontend
+                await self._emit_frontend({"type": "transcript", "transcript": transcript})
+                # Process transcript as user input
+                await self._process_transcribed_input(transcript)
+            else:
+                logger.warning(f"[azure] Empty transcription result")
+                await self._emit_frontend({"type": "error", "error": "transcription_empty"})
+                
+        except Exception as e:
+            logger.exception(f"[azure] Whisper transcription failed: %s", e)
+            await self._emit_frontend({"type": "error", "error": f"transcription_failed:{str(e)}"})
+            raise
+
+    async def commit_audio_buffer(self):
+        """No-op since we're using Whisper transcription instead of realtime audio."""
+        logger.info(f"[azure] Audio buffer processing completed via Whisper")
+        pass
 
     def _calculate_response_duration(self) -> Optional[float]:
         if self._last_request_started is not None:
@@ -678,16 +810,125 @@ class AzureRealtimeBridge:
         if self._recv_task:
             self._recv_task.cancel()
             try:
-                await self._recv_task
-            except Exception:
+                await asyncio.wait_for(self._recv_task, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+            except Exception as e:
+                logger.debug("[azure] Receiver task cleanup error (ignored): %s", e)
         if self.ws:
             try:
                 await self.ws.close()  # type: ignore
-            except Exception:
-                logger.exception("Error while closing azure websocket")
+            except Exception as e:
+                logger.debug("[azure] Websocket close error (ignored): %s", e)
             self.ws = None
 
+@router.post("")
+async def chat_post(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Unified endpoint for:
+      - Raw audio: Content-Type audio/* or application/octet-stream
+      - Multipart form-data with fields: file | audio | audioBlob | audio_blob
+      - JSON: {"text": "..."}
+      - Form-urlencoded: text=...
+    Returns a transcript; client then sends it over websocket as user_message.
+    """
+    content_type = (request.headers.get("content-type") or "").lower()
+    logger.info("[voice] Incoming POST /chat content-type=%s", content_type)
+
+    async def transcribe_bytes(data: bytes, filename: str = "audio.webm"):
+        if not data:
+            return {"success": False, "error": "Empty audio data"}
+        if AzureOpenAI is None:
+            return {"success": False, "error": "AzureOpenAI SDK not installed"}
+        if not settings.azure_openai_endpoint or not (settings.azure_openai_key or settings.azure_openai_api_key):
+            return {"success": False, "error": "Azure OpenAI audio config missing"}
+        audio_deployment = (
+            getattr(settings, "azure_openai_whisper_deployment", None)
+            or getattr(settings, "azure_openai_audio_deployment", None)
+            or "whisper"
+        )
+        try:
+            client = AzureOpenAI(
+                api_key=(settings.azure_openai_key or settings.azure_openai_api_key),
+                api_version=settings.openai_api_version,
+                azure_endpoint=settings.azure_openai_endpoint,
+            )
+            # Persist to temp file for SDK
+            suffix = Path(filename).suffix or ".wav"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+            with open(tmp_path, "rb") as audio_f:
+                result = client.audio.transcriptions.create(
+                    model=audio_deployment,
+                    file=audio_f,
+                    response_format="json"
+                )
+            transcript = getattr(result, "text", None) or (isinstance(result, dict) and result.get("text"))
+            if not transcript:
+                return {"success": False, "error": "Transcription returned no text"}
+            return {"success": True, "mode": "audio", "transcript": transcript, "text": transcript}
+        except Exception as e:
+            logger.exception("[voice] Transcription error")
+            return {"success": False, "error": str(e)}
+
+    # 1. Multipart form-data (browser FormData)
+    if content_type.startswith("multipart/"):
+        form = await request.form()
+        upload = (
+            form.get("file")
+            or form.get("audio")
+            or form.get("audioBlob")
+            or form.get("audio_blob")
+        )
+        text_val = form.get("text")
+        if upload:
+            try:
+                data = await upload.read()
+            except Exception:
+                data = b""
+            return await transcribe_bytes(data, getattr(upload, "filename", "audio.webm"))
+        if text_val:
+            return {"success": True, "mode": "text", "transcript": str(text_val), "text": str(text_val)}
+        return JSONResponse(status_code=400, content={"success": False, "error": "No valid fields in multipart form"})
+
+    # 2. Raw audio bytes
+    if content_type.startswith("audio/") or content_type.startswith("application/octet-stream"):
+        data = await request.body()
+        return await transcribe_bytes(data, f"audio{'.webm' if 'webm' in content_type else '.wav'}")
+
+    # 3. JSON body with text
+    if content_type.startswith("application/json"):
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        text_val = (payload or {}).get("text")
+        if text_val:
+            return {"success": True, "mode": "text", "transcript": str(text_val), "text": str(text_val)}
+        return JSONResponse(status_code=400, content={"success": False, "error": "Missing 'text' in JSON"})
+
+    # 4. Form-urlencoded (text=...)
+    if content_type.startswith("application/x-www-form-urlencoded"):
+        form = await request.form()
+        text_val = form.get("text")
+        if text_val:
+            return {"success": True, "mode": "text", "transcript": str(text_val), "text": str(text_val)}
+        return JSONResponse(status_code=400, content={"success": False, "error": "No text field found"})
+
+    # 5. Fallback: attempt body as UTF-8 text
+    raw = await request.body()
+    if raw:
+        try:
+            decoded = raw.decode("utf-8").strip()
+            if decoded:
+                return {"success": True, "mode": "text", "transcript": decoded, "text": decoded}
+        except Exception:
+            pass
+    return JSONResponse(status_code=400, content={"success": False, "error": "Unsupported content type or empty body"})
 
 @router.post("/restart")
 async def restart_all_sessions():
@@ -701,6 +942,8 @@ async def restart_all_sessions():
         logger.exception("[restart] Error clearing all sessions")
         return {"success": False, "error": str(e)}
 
+AUDIO_DEBOUNCE_SECONDS = 0.8  # silence gap before auto flush
+AUDIO_MAX_BUFFER_BYTES = 10 * 1024 * 1024  # 10MB safety limit
 
 @router.websocket("/ws")
 async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
@@ -709,19 +952,144 @@ async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
     bridge = AzureRealtimeBridge(settings, client_id)
     bridge._frontend_websocket = ws
     logger.info("[client %s] Connected", client_id)
+
+    async def _keepalive():
+        try:
+            while True:
+                await asyncio.sleep(25)
+                try:
+                    await ws.send_text(json.dumps({"type": "keepalive"}))
+                except Exception:
+                    logger.debug("[client %s] Keepalive send failed, stopping", client_id)
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    # Send initial readiness message so frontend is not blank
+    try:
+        await ws.send_text(json.dumps({"type": "ready"}))
+        logger.info("[client %s] Sent ready event", client_id)
+    except Exception:
+        logger.exception("[client %s] Failed sending initial ready message", client_id)
+
+    keepalive_task = asyncio.create_task(_keepalive())
+
+    # Dispatch initial welcome (non-form activating)
+    welcome_task: Optional[asyncio.Task] = None
+    try:
+        welcome_task = asyncio.create_task(bridge.send_system_message(WELCOME_GREETING_MESSAGE))
+    except Exception:
+        logger.exception("[client %s] Failed scheduling welcome message", client_id)
+
+    # --- Audio streaming state ---
+    audio_buffer = bytearray()
+    audio_last_ts: float = 0.0
+    audio_flush_task: Optional[asyncio.Task] = None
+    audio_in_progress = False
+    audio_total_sent = 0  # Track total audio sent to Azure
+
+    async def _flush_audio(reason: str):
+        nonlocal audio_buffer, audio_flush_task, audio_in_progress, audio_total_sent
+        if not audio_buffer or audio_in_progress:
+            return
+        audio_in_progress = True
+        buf = bytes(audio_buffer)
+        audio_buffer = bytearray()
+        if audio_flush_task:
+            audio_flush_task.cancel()
+            audio_flush_task = None
+        logger.info("[client %s] Flushing audio buffer bytes=%d reason=%s", client_id, len(buf), reason)
+        
+        try:
+            # Lower minimum audio size since we're using Whisper which is more flexible
+            min_audio_size = 2000  # ~125ms worth of audio data
+            
+            if len(buf) < min_audio_size and reason not in ["disconnect", "explicit_commit"]:
+                logger.warning("[client %s] Audio buffer too small (%d bytes), accumulating more. Need at least %d bytes", 
+                             client_id, len(buf), min_audio_size)
+                # Put the data back in buffer for next flush
+                audio_buffer = bytearray(buf) + audio_buffer
+                return
+            
+            # Process audio via Whisper transcription
+            await bridge.send_audio_chunk(buf)
+            logger.info("[client %s] Audio processed via Whisper transcription", client_id)
+            
+            # Reset the accumulation counter
+            audio_total_sent = 0
+            
+        except Exception as e:
+            logger.exception("[client %s] Error processing audio: %s", client_id, e)
+            await ws.send_text(json.dumps({
+                "type": "error", 
+                "error": f"audio_processing_failed: {str(e)}"
+            }))
+        finally:
+            audio_in_progress = False
+
+    # Reduce debounce time since Whisper is more flexible with audio formats
+    def _schedule_audio_flush():
+        nonlocal audio_flush_task
+        if audio_flush_task and not audio_flush_task.done():
+            audio_flush_task.cancel()
+        async def _debounced():
+            try:
+                # Shorter debounce for better responsiveness
+                await asyncio.sleep(1.2)  # 1.2 seconds to ensure we get enough audio
+                await _flush_audio("debounce_timeout")
+            except asyncio.CancelledError:
+                pass
+        audio_flush_task = asyncio.create_task(_debounced())
+
     try:
         while True:
-            raw = await ws.receive_text()
+            message = await ws.receive()
+            mtype = message.get("type")
+            if mtype == "websocket.disconnect":
+                await _flush_audio("disconnect")
+                break
+            if mtype != "websocket.receive":
+                continue
+
+            # --- Binary frame (audio chunk) ---
+            if "bytes" in message and message["bytes"] is not None:
+                chunk: bytes = message["bytes"]
+                if not chunk:
+                    await _flush_audio("empty_chunk")
+                    continue
+                if len(audio_buffer) + len(chunk) > AUDIO_MAX_BUFFER_BYTES:
+                    logger.warning("[client %s] Audio buffer overflow, dropping chunk", client_id)
+                    await ws.send_text(json.dumps({"type": "error", "error": "audio_buffer_overflow"}))
+                    continue
+                audio_buffer.extend(chunk)
+                audio_last_ts = time.perf_counter()
+                await ws.send_text(json.dumps({"type": "audio_ack", "bytes": len(audio_buffer)}))
+                _schedule_audio_flush()
+                continue
+
+            raw = None
+            if "text" in message and message["text"] is not None:
+                raw = message["text"]
+            else:
+                continue
+
             try:
                 msg = json.loads(raw)
             except Exception:
                 await ws.send_text(json.dumps({"type": "error", "error": "invalid_json"}))
                 continue
-            mtype = msg.get("type")
-            if mtype == "ping":
+
+            msg_type = msg.get("type")
+
+            if msg_type == "audio_commit":
+                await _flush_audio("explicit_commit")
+                continue
+
+            if msg_type == "ping":
                 await ws.send_text(json.dumps({"type": "pong"}))
                 continue
-            if mtype == "user_message":
+                
+            if msg_type == "user_message":
                 content = (msg.get("content") or "").strip()
                 if not content:
                     await ws.send_text(json.dumps({"type": "error", "error": "empty_message"}))
@@ -735,11 +1103,24 @@ async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
                     await ws.send_text(json.dumps({"type": "error", "error": str(e)}))
             else:
                 await ws.send_text(json.dumps({"type": "error", "error": "unknown_event"}))
-    except WebSocketDisconnect:
-        logger.info("[client %s] Disconnected", client_id)
+
+    except WebSocketDisconnect as e:
+        logger.info("[client %s] Disconnected (code=%s)", client_id, getattr(e, "code", "unknown"))
     except Exception as e:
         logger.exception("[client %s] Websocket error: %s", client_id, e)
     finally:
+        if audio_flush_task and not audio_flush_task.done():
+            audio_flush_task.cancel()
+        try:
+            await _flush_audio("finalize")
+        except Exception:
+            pass
+        try:
+            keepalive_task.cancel()
+        except Exception:
+            pass
+        if welcome_task and not welcome_task.done():
+            welcome_task.cancel()
         try:
             await bridge.close()
         except Exception:

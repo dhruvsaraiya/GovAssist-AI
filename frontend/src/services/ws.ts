@@ -35,6 +35,9 @@ export interface WSListeners {
   onState?: (s: WSState) => void;
   onDelta?: (delta: string) => void;
   onAssistantMessage?: (msg: ChatMessageLike) => void;
+  onTranscript?: (transcript: string) => void;
+  onSpeechStarted?: () => void;
+  onSpeechStopped?: () => void;
   onFormOpen?: (url: string) => void;
   onFormFieldUpdate?: (fieldId: string, value: any, progress: any) => void;
   onFormFieldFocus?: (fieldId: string, progress: any) => void;
@@ -58,6 +61,11 @@ export class ChatWebSocket {
     const proto = 'ws';
     this.url = `${proto}://${BACKEND_HOST}:${BACKEND_PORT}/api/chat/ws`;
     this.connect();
+  }
+
+  // Add public getter for WebSocket access (for audio sending)
+  public get websocket(): WebSocket | null {
+    return this.ws;
   }
 
   private log(...args: any[]) { if (this.listeners.debug) console.log('[ws]', ...args); }
@@ -109,6 +117,11 @@ export class ChatWebSocket {
   private handleMessage(raw: string) {
     let evt: IncomingEvent | any;
     try { evt = JSON.parse(raw); } catch { return; }
+    
+    if (this.listeners.debug) {
+      console.log('[ws] received event:', evt.type, evt);
+    }
+    
     switch (evt.type) {
       case 'assistant_delta':
         this.listeners.onDelta?.(evt.delta || '');
@@ -145,8 +158,34 @@ export class ChatWebSocket {
       case 'form_field_error':
         this.listeners.onFormFieldError?.(evt.error, evt.field);
         break;
+      case 'transcript':
+        if (this.listeners.debug) {
+          console.log('[ws] transcript event:', evt.transcript);
+        }
+        this.listeners.onTranscript?.(evt.transcript);
+        break;
+      case 'speech_started':
+        if (this.listeners.debug) {
+          console.log('[ws] speech started');
+        }
+        this.listeners.onSpeechStarted?.();
+        break;
+      case 'speech_stopped':
+        if (this.listeners.debug) {
+          console.log('[ws] speech stopped');
+        }
+        this.listeners.onSpeechStopped?.();
+        break;
       case 'error':
+        if (this.listeners.debug) {
+          console.log('[ws] error event:', evt.error);
+        }
         this.listeners.onError?.(evt.error);
+        break;
+      case 'audio_ack':
+        if (this.listeners.debug) {
+          console.log('[ws] audio ack:', evt.bytes, 'bytes buffered');
+        }
         break;
       default:
         break;
