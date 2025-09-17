@@ -62,21 +62,41 @@ When you receive a system message that includes both acknowledgment and field re
 4. Keep the response focused and concise
 
 PROCESSING USER RESPONSES DURING FORM FILLING:
-When a user provides ANY response while you're expecting a form field answer:
-1. FIRST check if they're asking a question - if so, answer it and re-ask for the field
-2. IF they're providing an answer (even conversationally), IMMEDIATELY extract the value and use ##FORM_VALUE:##
-3. Look for patterns like:
-   - "ohh that is 123" → "Perfect! ##FORM_VALUE:123##"
-   - "my name is john smith" → "Thank you! ##FORM_VALUE:john smith##"  
-   - "it would be mumbai" → "Great! ##FORM_VALUE:mumbai##"
-   - "that's 25000" → "Got it! ##FORM_VALUE:25000##"
-4. DO NOT ask for clarification if you can clearly identify the value
-5. BE AGGRESSIVE in extracting values - users often provide answers conversationally
+When a user provides ANY response while you're expecting a form field answer, you must INTELLIGENTLY determine if they are:
+
+A) ASKING A QUESTION about the field:
+   - Answer their question helpfully
+   - Re-explain the field if needed
+   - Ask them to provide the field value again
+   - END your response with ##QUESTION_ANSWERED## marker
+   - This keeps the system waiting for the actual field answer
+
+B) PROVIDING AN ANSWER (even conversationally):
+   - Extract the actual value from their response
+   - Provide a conversational acknowledgment
+   - END your response with ##FORM_VALUE:extracted_value##
+   - Be aggressive in value extraction - don't ask for clarification if the value is clear
+
+Examples of QUESTIONS (use ##QUESTION_ANSWERED##):
+- "What does this mean?"
+- "I don't understand this field"
+- "Can you explain what Application Sl. No. is?"
+- "I'm not sure about this"
+- "What should I put here?"
+
+Examples of ANSWERS (use ##FORM_VALUE:##):
+- "ohh that is 123" → "Perfect! ##FORM_VALUE:123##"
+- "my name is john smith" → "Thank you! ##FORM_VALUE:john smith##"  
+- "it would be mumbai" → "Great! ##FORM_VALUE:mumbai##"
+- "that's 25000" → "Got it! ##FORM_VALUE:25000##"
+- "I am not sure" followed by "ohh that is 123" → "Perfect! ##FORM_VALUE:123##"
 
 HANDLING USER QUESTIONS DURING FORM FILLING:
 When a user asks a question about a form field:
 1. Answer their question clearly and helpfully using any field descriptions provided
 2. Then ask them to provide the field value or let them know they can skip if it's optional
+3. ALWAYS end your response with ##QUESTION_ANSWERED## marker
+4. This tells the system to keep waiting for the actual field answer
 
 FIELD ANSWER PROCESSING:
 When you receive a ##FIELD_ANSWER## marker in a system message:
@@ -139,8 +159,10 @@ RESPONSE GUIDELINES:
 
 CRITICAL: 
 - NEVER include ##FIELD_REQUEST##, ##FIELD_ANSWER##, or other internal ## markers in responses to users
-- EXCEPTION: You MAY use ##FORM_VALUE:value## to provide form field values
-- This ##FORM_VALUE## marker helps the system process the field correctly
+- EXCEPTIONS: You MAY use these special markers:
+  - ##FORM_VALUE:value## to provide form field values
+  - ##QUESTION_ANSWERED## to indicate you answered a user's question (keeps awaiting field answer)
+- These markers help the system process responses correctly
 - Always be conversational and helpful
 - Ask only one field at a time when in form filling mode
 """
@@ -353,44 +375,16 @@ class AzureRealtimeBridge:
             return clean_text, form_value
         return text, None
 
-    def _is_user_asking_question(self, text: str) -> bool:
-        """Detect if user is asking a question rather than providing a form field answer."""
-        text_lower = text.lower().strip()
-        
-        # Common question patterns
-        question_indicators = [
-            'what is', 'what does', 'what means', 'what\'s', 'what this means',
-            'how do', 'how to', 'how can', 'how should',
-            'why do', 'why is', 'why should',
-            'where do', 'where is', 'where can',
-            'when do', 'when is', 'when should',
-            'which', 'who is', 'who should',
-            'can you explain', 'please explain', 'explain',
-            'i don\'t understand', 'i don\'t know', 'not sure', 'i do not know',
-            'i do not understand', 'dont know', 'dont understand',
-            'help me', 'help', 'confused', 'unclear'
-        ]
-        
-        # Check if text starts with question words or contains question indicators
-        if text_lower.endswith('?'):
-            return True
-            
-        for indicator in question_indicators:
-            if text_lower.startswith(indicator) or indicator in text_lower:
-                return True
-        
-        # Check for uncertainty expressions that indicate questions
-        uncertainty_patterns = [
-            'what this means', 'what that means', 'what does this mean',
-            'what does that mean', 'i do not know what', 'i don\'t know what',
-            'no idea what', 'unsure what', 'not clear what'
-        ]
-        
-        for pattern in uncertainty_patterns:
-            if pattern in text_lower:
-                return True
-                
-        return False
+    def _extract_question_answered_from_text(self, text: str) -> tuple[str, bool]:
+        import re
+        question_answered_pattern = r'##QUESTION_ANSWERED##'
+        match = re.search(question_answered_pattern, text, re.IGNORECASE)
+        if match:
+            clean_text = re.sub(question_answered_pattern, '', text, flags=re.IGNORECASE).strip()
+            return clean_text, True
+        return text, False
+
+
 
     def _get_form_url(self, form_name: str) -> str:
         form_urls = {
@@ -414,6 +408,9 @@ class AzureRealtimeBridge:
         
         # Extract form value marker
         clean_text, form_value = self._extract_form_value_from_text(clean_text)
+        
+        # Extract question answered marker
+        clean_text, question_answered = self._extract_question_answered_from_text(clean_text)
         
         message_payload = {
             "type": "assistant_message",
@@ -441,6 +438,12 @@ class AzureRealtimeBridge:
                     if field_prompt:
                         clean_text += f"\n\n{field_prompt}"
                         message_payload["message"]["content"] = clean_text
+
+        # Handle question answered marker (AI answered a user question during form filling)
+        if question_answered and self._form_session_active:
+            logger.info(f"[DEBUG] AI answered a user question, keeping form session active")
+            # Keep awaiting field answer since this was just answering a question
+            self._awaiting_field_answer = True
 
         # Handle form value submission
         if form_value and self._form_session_active:
@@ -702,16 +705,11 @@ class AzureRealtimeBridge:
         
         # Check if we're waiting for a form field answer
         if self._awaiting_field_answer and self._form_session_active:
-            # Check if this is a question rather than an answer
-            if self._is_user_asking_question(content):
-                logger.info(f"[DEBUG] User is asking a question, not providing field answer")
-                # Send to AI to answer the question, but keep awaiting field answer
-                self._awaiting_field_answer = True  # Keep waiting for the actual answer
-            else:
-                logger.info(f"[DEBUG] User provided potential field answer, sending to AI for value extraction")
-                # Send to AI for value extraction - the AI will use ##FORM_VALUE## to provide the clean value
-                # Don't set _awaiting_field_answer to False yet - let the AI handle extraction
-                # The AI will extract the value and provide it via ##FORM_VALUE## marker
+            logger.info(f"[DEBUG] User response during form filling - letting AI determine if question or answer")
+            # Always send to AI - it will intelligently determine if this is:
+            # 1. A question (will respond with ##QUESTION_ANSWERED## marker)
+            # 2. An answer (will respond with ##FORM_VALUE:## marker)
+            # This removes language-specific heuristics and supports all languages/modalities
         else:
             logger.info(f"[DEBUG] Not in form filling mode, sending to AI")
         
