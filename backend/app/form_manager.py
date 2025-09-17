@@ -20,6 +20,8 @@ class FormField:
     required: bool
     options: Optional[List[str]] = None
     validation: Optional[Dict[str, Any]] = None
+    description: Optional[str] = None
+    option_descriptions: Optional[Dict[str, str]] = None
 
 
 @dataclass
@@ -68,17 +70,36 @@ class FormSession:
             return None
         
         field = self.current_field
-        prompt = f"What is your {field.label.lower()}?"
         
+        # Start with field description if available
+        if field.description:
+            prompt = f"Next, I need to know: {field.label}\n\n{field.description}"
+        else:
+            prompt = f"What is your {field.label.lower()}?"
+        
+        # Add format instructions based on field type
         if field.type == "date":
-            prompt += " (Please provide in YYYY-MM-DD format)"
+            prompt += "\n\nPlease provide in YYYY-MM-DD format (e.g., 1990-01-15)"
         elif field.type == "number":
-            prompt += " (Please provide a number)"
-        elif field.options:
-            prompt += f" (Choose from: {', '.join(field.options)})"
+            prompt += "\n\nPlease provide a number"
+        elif field.type == "email":
+            prompt += "\n\nPlease provide a valid email address"
         
+        # Add options if available
+        if field.options:
+            prompt += "\n\nAvailable options:"
+            for option in field.options:
+                if field.option_descriptions and option in field.option_descriptions:
+                    prompt += f"\n• {option}: {field.option_descriptions[option]}"
+                else:
+                    prompt += f"\n• {option}"
+            prompt += f"\n\nPlease choose one of: {', '.join(field.options)}"
+        
+        # Add required indicator
         if field.required:
-            prompt += " (Required)"
+            prompt += "\n\n(This field is required)"
+        else:
+            prompt += "\n\n(This field is optional - you can skip it by saying 'skip' or 'next')"
         
         return prompt
 
@@ -135,7 +156,9 @@ class FormFieldManager:
                 type=field_data["type"],
                 required=field_data.get("required", False),
                 options=field_data.get("options"),
-                validation=field_data.get("validation")
+                validation=field_data.get("validation"),
+                description=field_data.get("description"),
+                option_descriptions=field_data.get("option_descriptions")
             )
             fields.append(field)
         

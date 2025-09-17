@@ -186,11 +186,87 @@ export const FormWebView = React.forwardRef<any, FormWebViewProps>(({
     }
   }, [props]);
 
+  const focusField = useCallback((fieldId: string) => {
+    console.log('[FormWebView] focusField called:', fieldId);
+    try {
+      // Script to focus and highlight a field without changing its value
+      const script = `(function(){
+        console.log('Trying to focus field:', '${fieldId}');
+        
+        // Try multiple ways to find the element
+        let el = document.getElementById('${fieldId}') || 
+                 document.querySelector('[name="${fieldId}"]') ||
+                 document.querySelector('input[id*="${fieldId}"]') ||
+                 document.querySelector('input[name*="${fieldId}"]') ||
+                 document.querySelector('select[id*="${fieldId}"]') ||
+                 document.querySelector('select[name*="${fieldId}"]') ||
+                 document.querySelector('textarea[id*="${fieldId}"]') ||
+                 document.querySelector('textarea[name*="${fieldId}"]');
+        
+        console.log('Found element for focus:', el, 'tagName:', el ? el.tagName : 'null');
+        
+        if(el){ 
+          // Focus the element
+          el.focus();
+          
+          // Scroll into view
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          
+          // Highlight the field to show it's active
+          const originalBorder = el.style.border;
+          const originalBoxShadow = el.style.boxShadow;
+          el.style.border = '2px solid #3b82f6';
+          el.style.boxShadow = '0 0 0 3px rgba(59, 130, 246, 0.1)';
+          el.style.transition = 'border 0.3s, box-shadow 0.3s';
+          
+          setTimeout(function() {
+            el.style.border = originalBorder;
+            el.style.boxShadow = originalBoxShadow;
+          }, 3000);
+          
+          console.log('Field focused successfully:', '${fieldId}');
+          return true;
+        } else {
+          console.warn('Element not found for focus:', '${fieldId}');
+          return false;
+        }
+      })(); true;`;
+      
+      if (Platform.OS === 'web') {
+        // For web, try to access iframe content directly
+        const iframe = document.querySelector('iframe') as HTMLIFrameElement;
+        if (iframe && iframe.contentDocument) {
+          console.log('[FormWebView] Executing focus script in iframe content');
+          const scriptEl = iframe.contentDocument.createElement('script');
+          scriptEl.textContent = script;
+          iframe.contentDocument.head.appendChild(scriptEl);
+          iframe.contentDocument.head.removeChild(scriptEl);
+        } else if (iframe && iframe.contentWindow) {
+          console.log('[FormWebView] Posting focus message to iframe');
+          iframe.contentWindow.postMessage({
+            type: 'FOCUS_FIELD',
+            fieldId: fieldId
+          }, '*');
+        } else {
+          console.warn('[FormWebView] Iframe not accessible for focus');
+        }
+      } else {
+        // For mobile WebView
+        console.log('[FormWebView] Injecting focus JavaScript into WebView');
+        webviewRef.current?.injectJavaScript(script);
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[FormWebView] focusField failed', e);
+    }
+  }, []);
+
   // Expose methods via ref
   React.useImperativeHandle(ref, () => ({
     updateField: updateSingleField,
+    focusField: focusField,
     fillForm: injectMapping
-  }), [updateSingleField, injectMapping]);
+  }), [updateSingleField, focusField, injectMapping]);
 
   const onWebviewLoad = useCallback(() => {
     if (props.autoFillOnLoad && props.autoFillData) {

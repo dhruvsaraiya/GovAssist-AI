@@ -114,6 +114,16 @@ export const ChatScreen: React.FC = () => {
           formWebViewRef.current.updateField(fieldId, value);
         }
       },
+      onFormFieldFocus: (fieldId, progress) => {
+        // eslint-disable-next-line no-console
+        console.log('[form] field focus:', fieldId, progress);
+        setFormProgress(progress);
+        
+        // Focus on the specific field in the form (highlight it)
+        if (formWebViewRef.current) {
+          formWebViewRef.current.focusField(fieldId);
+        }
+      },
       onFormCompleted: (formData) => {
         // eslint-disable-next-line no-console
         console.log('[form] completed:', formData);

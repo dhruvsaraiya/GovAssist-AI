@@ -46,10 +46,34 @@ MUDRA/INCOME REQUESTS (keywords: mudra loan, business loan, income certificate, 
 - Always end response with: ##FORM:income##
 
 FORM FILLING MODE:
-When you receive a system message starting with "Ask the user:", you should ask the user exactly what is requested in a natural, conversational way. Do not include any markers in your response to the user.
+When you receive a system message starting with "Ask the user:", you should:
+1. Present the field request in a natural, conversational way
+2. If the request includes field descriptions, present them clearly
+3. If options are provided, explain them helpfully
+4. Be encouraging and supportive
+5. Do not include any ## markers in your response to users
+
+COMBINED ACKNOWLEDGMENT AND FIELD REQUEST:
+When you receive a system message that includes both acknowledgment and field request:
+1. First, briefly acknowledge the previous answer positively (1-2 sentences max)
+2. Then, present the next field request naturally
+3. Do NOT ask multiple questions or provide extra commentary
+4. Keep the response focused and concise
 
 FIELD ANSWER PROCESSING:
-When you receive a ##FIELD_ANSWER## marker in a system message, briefly acknowledge the user's answer and wait for the next field request.
+When you receive a ##FIELD_ANSWER## marker in a system message:
+1. Briefly acknowledge the user's answer positively
+2. If the answer was validated successfully, show appreciation
+3. If there were validation issues, be encouraging and offer gentle guidance
+4. Wait for the next field request
+
+RESPONSE GUIDELINES:
+- Be conversational, friendly, and professional
+- Explain technical terms or requirements clearly
+- For dropdown/select fields, present options in an easy-to-read format
+- Provide context about why certain information is needed
+- Reassure users about data privacy and security when appropriate
+- Use encouraging language like "Great!", "Perfect!", "Thank you!"
 
 CRITICAL: 
 - NEVER include ##FIELD_REQUEST##, ##FIELD_ANSWER##, or any other ## markers in responses to users
@@ -215,8 +239,10 @@ class AzureRealtimeBridge:
                 await self._send_assistant_message(full, event_type="buffered_fallback")
             
             # Mark AI as no longer responding and process any pending requests
-            self._ai_responding = False
-            await self._process_pending_requests()
+            # Only do this if no message was sent (avoid double processing)
+            if not self._response_sent:
+                self._ai_responding = False
+                await self._process_pending_requests()
 
         elif etype == "error":
             err_msg = event.get("error", {}).get("message", "unknown_error")
@@ -322,6 +348,11 @@ class AzureRealtimeBridge:
             
             if request['type'] == 'field_request':
                 await self._ask_for_next_field()
+            elif request['type'] == 'field_request_with_ack':
+                await self._ask_for_next_field_with_acknowledgment(
+                    request['completed_value'], 
+                    request['completed_field_label']
+                )
             elif request['type'] == 'system_message':
                 await self.send_system_message(request['content'])
 
@@ -349,6 +380,21 @@ class AzureRealtimeBridge:
         field = session.current_field
         logger.info(f"[DEBUG] Asking for field: {field.id} ({field.label}) for user {self.user_id}")
         
+        # Send field focus event to frontend to highlight the next field
+        await self._emit_frontend({
+            "type": "form_field_focus",
+            "field_focus": {
+                "field_id": field.id
+            },
+            "form_progress": {
+                "current_index": session.current_field_index,
+                "total_fields": len(session.fields),
+                "percentage": session.progress_percentage,
+                "is_complete": session.is_complete
+            }
+        })
+        logger.info(f"[DEBUG] Sent form_field_focus to prepare field {field.id}")
+        
         # Create a natural prompt for the AI to ask for the field
         field_prompt = session.get_next_field_prompt()
         
@@ -357,20 +403,80 @@ class AzureRealtimeBridge:
             logger.info(f"[DEBUG] Sending field prompt: {field_prompt}")
             await self.send_system_message(f"Ask the user: {field_prompt}")
             self._awaiting_field_answer = True
+
+    async def _ask_for_next_field_with_acknowledgment(self, completed_value: str, completed_field_label: str):
+        """Acknowledge the completed field and ask for the next field in a single message."""
+        logger.info(f"[DEBUG] Asking for next field with acknowledgment: '{completed_value}' for '{completed_field_label}'")
+        logger.info(f"[DEBUG] AI responding: {self._ai_responding}")
+        
+        # If AI is currently responding, queue the combined request
+        if self._ai_responding:
+            logger.info(f"[azure] Queuing field request with acknowledgment (AI busy)")
+            self._pending_requests.append({
+                'type': 'field_request_with_ack', 
+                'completed_value': completed_value,
+                'completed_field_label': completed_field_label
+            })
+            return
+            
+        session = form_field_manager.get_active_session(self.user_id)
+        if not session:
+            logger.info(f"[DEBUG] No active session for user {self.user_id}")
+            return
+        if not session.current_field:
+            logger.info(f"[DEBUG] No current field for user {self.user_id}, session complete: {session.is_complete}")
+            return
+        
+        field = session.current_field
+        logger.info(f"[DEBUG] Asking for field with acknowledgment: {field.id} ({field.label}) for user {self.user_id}")
+        
+        # Send field focus event to frontend to highlight the next field
+        await self._emit_frontend({
+            "type": "form_field_focus",
+            "field_focus": {
+                "field_id": field.id
+            },
+            "form_progress": {
+                "current_index": session.current_field_index,
+                "total_fields": len(session.fields),
+                "percentage": session.progress_percentage,
+                "is_complete": session.is_complete
+            }
+        })
+        logger.info(f"[DEBUG] Sent form_field_focus to prepare field {field.id}")
+        
+        # Create a natural prompt for the AI to ask for the field
+        field_prompt = session.get_next_field_prompt()
+        
+        if field_prompt:
+            # Combine acknowledgment with next field request
+            combined_message = f"The user provided '{completed_value}' for {completed_field_label}. Acknowledge this briefly and positively, then ask the user: {field_prompt}"
+            logger.info(f"[DEBUG] Sending combined prompt: {combined_message}")
+            await self.send_system_message(combined_message)
+            self._awaiting_field_answer = True
     
     async def _process_field_answer(self, user_answer: str):
         """Process user's answer to a form field."""
+        logger.info(f"[DEBUG] Processing field answer: '{user_answer}' for user {self.user_id}")
+        logger.info(f"[DEBUG] Form session active: {self._form_session_active}, Awaiting answer: {self._awaiting_field_answer}")
+        
         if not self._form_session_active:
+            logger.info(f"[DEBUG] No active form session, returning False")
             return False
         
         session = form_field_manager.get_active_session(self.user_id)
         if not session:
+            logger.info(f"[DEBUG] No session found for user {self.user_id}")
             return False
+        
+        logger.info(f"[DEBUG] Current field: {session.current_field.id if session.current_field else 'None'}")
         
         # Process the answer
         result = form_field_manager.process_user_answer(self.user_id, user_answer)
+        logger.info(f"[DEBUG] Process result: {result['success']}, field: {result.get('completed_field', {}).get('id', 'None')}")
         
         if result["success"]:
+            logger.info(f"[DEBUG] Field processed successfully, sending update to frontend")
             # Send field update to frontend
             await self._emit_frontend({
                 "type": "form_field_update",
@@ -380,10 +486,7 @@ class AzureRealtimeBridge:
                 },
                 "form_progress": result["form_progress"]
             })
-            
-            # Send acknowledgment message without markers
-            field_label = result['completed_field'].get('label', result['completed_field']['id'])
-            await self.send_system_message(f"The user provided '{result['completed_field']['value']}' for {field_label}. Acknowledge this briefly.")
+            logger.info(f"[DEBUG] Sent form_field_update for field {result['completed_field']['id']}")
             
             # Check if form is complete
             if result["form_progress"]["is_complete"]:
@@ -397,9 +500,10 @@ class AzureRealtimeBridge:
                 })
                 
                 # Inform AI that form is complete
-                await self.send_system_message("The form has been completed successfully. Thank the user and let them know their information has been saved.")
+                field_label = result['completed_field'].get('label', result['completed_field']['id'])
+                await self.send_system_message(f"The user provided '{result['completed_field']['value']}' for {field_label}. Acknowledge this briefly and thank them. The form has been completed successfully.")
             else:
-                # Ask for next field
+                # Ask for next field directly - the AI will naturally acknowledge
                 await self._ask_for_next_field()
             
             return True
@@ -456,12 +560,22 @@ class AzureRealtimeBridge:
             self._ai_responding = True
 
     async def send_user_message(self, content: str):
+        logger.info(f"[DEBUG] send_user_message called with: '{content}'")
+        logger.info(f"[DEBUG] _awaiting_field_answer: {self._awaiting_field_answer}, _form_session_active: {self._form_session_active}")
+        
         # Check if we're waiting for a form field answer
         if self._awaiting_field_answer and self._form_session_active:
+            logger.info(f"[DEBUG] Processing as field answer")
+            # Set to False BEFORE processing to avoid race condition
+            self._awaiting_field_answer = False
             success = await self._process_field_answer(content)
             if success:
-                self._awaiting_field_answer = False
+                logger.info(f"[DEBUG] Field answer processed successfully")
                 return  # Field was processed, don't send to AI
+            else:
+                logger.info(f"[DEBUG] Field answer processing failed")
+        else:
+            logger.info(f"[DEBUG] Not processing as field answer, sending to AI")
         
         # Don't send new messages while AI is responding
         if self._ai_responding:

@@ -2,15 +2,81 @@
   "form_id": "formAadhaar",
   "title": "Aadhaar Update Form (Demo)",
   "fields": [
-    { "id": "applicant_name", "label": "Applicant Name", "type": "text", "required": true },
-    { "id": "father_name", "label": "Father's Name", "type": "text", "required": true },
-    { "id": "date_of_birth", "label": "Date of Birth", "type": "date", "required": true },
-    { "id": "gender", "label": "Gender", "type": "text", "required": true, "options": ["Male", "Female", "Other"] },
-    { "id": "address_line1", "label": "Address Line 1", "type": "text", "required": true },
-    { "id": "city", "label": "City", "type": "text", "required": true },
-    { "id": "state", "label": "State", "type": "text", "required": true },
-    { "id": "pin_code", "label": "PIN Code", "type": "number", "required": true },
-    { "id": "mobile", "label": "Mobile Number", "type": "text", "required": true },
-    { "id": "email", "label": "Email Address", "type": "email", "required": false }
+    { 
+      "id": "applicant_name", 
+      "label": "Applicant Name", 
+      "type": "text", 
+      "required": true,
+      "description": "Your full name as it should appear on the Aadhaar card"
+    },
+    { 
+      "id": "father_name", 
+      "label": "Father's Name", 
+      "type": "text", 
+      "required": true,
+      "description": "Your father's full name as it appears on official documents"
+    },
+    { 
+      "id": "date_of_birth", 
+      "label": "Date of Birth", 
+      "type": "date", 
+      "required": true,
+      "description": "Your date of birth in YYYY-MM-DD format (e.g., 1990-01-15)"
+    },
+    { 
+      "id": "gender", 
+      "label": "Gender", 
+      "type": "select", 
+      "required": true,
+      "description": "Your gender as it should appear on the Aadhaar card",
+      "options": ["Male", "Female", "Other"],
+      "option_descriptions": {
+        "Male": "Male",
+        "Female": "Female", 
+        "Other": "Other/Transgender"
+      }
+    },
+    { 
+      "id": "address_line1", 
+      "label": "Address Line 1", 
+      "type": "text", 
+      "required": true,
+      "description": "Your current residential address (house number, street, locality)"
+    },
+    { 
+      "id": "city", 
+      "label": "City", 
+      "type": "text", 
+      "required": true,
+      "description": "The city or town where you currently reside"
+    },
+    { 
+      "id": "state", 
+      "label": "State", 
+      "type": "text", 
+      "required": true,
+      "description": "The state where you currently reside"
+    },
+    { 
+      "id": "pin_code", 
+      "label": "PIN Code", 
+      "type": "number", 
+      "required": true,
+      "description": "6-digit postal code of your current address"
+    },
+    { 
+      "id": "mobile", 
+      "label": "Mobile Number", 
+      "type": "text", 
+      "required": true,
+      "description": "Your 10-digit mobile number for OTP verification and communication"
+    },
+    { 
+      "id": "email", 
+      "label": "Email Address", 
+      "type": "email", 
+      "required": false,
+      "description": "Your email address for correspondence (optional but recommended)"
+    }
   ]
 }

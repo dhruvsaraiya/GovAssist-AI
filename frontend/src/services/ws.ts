@@ -11,12 +11,17 @@ export interface FormFieldUpdateEvent {
   field_update: { field_id: string; value: any };
   form_progress: { current_index: number; total_fields: number; percentage: number; is_complete: boolean }
 }
+export interface FormFieldFocusEvent { 
+  type: 'form_field_focus'; 
+  field_focus: { field_id: string };
+  form_progress: { current_index: number; total_fields: number; percentage: number; is_complete: boolean }
+}
 export interface FormCompletedEvent { type: 'form_completed'; form_data: Record<string, any> }
 export interface FormFieldErrorEvent { type: 'form_field_error'; error: string; field?: any }
 export interface AckEvent { type: 'ack'; message_id: string }
 export interface ErrorEvent { type: 'error'; error: string }
 export interface PongEvent { type: 'pong' }
-export type IncomingEvent = AssistantDeltaEvent | AssistantMessageEvent | FormOpenEvent | FormFieldUpdateEvent | FormCompletedEvent | FormFieldErrorEvent | AckEvent | ErrorEvent | PongEvent;
+export type IncomingEvent = AssistantDeltaEvent | AssistantMessageEvent | FormOpenEvent | FormFieldUpdateEvent | FormFieldFocusEvent | FormCompletedEvent | FormFieldErrorEvent | AckEvent | ErrorEvent | PongEvent;
 
 export interface ChatMessageLike {
   id?: string;
@@ -32,6 +37,7 @@ export interface WSListeners {
   onAssistantMessage?: (msg: ChatMessageLike) => void;
   onFormOpen?: (url: string) => void;
   onFormFieldUpdate?: (fieldId: string, value: any, progress: any) => void;
+  onFormFieldFocus?: (fieldId: string, progress: any) => void;
   onFormCompleted?: (formData: Record<string, any>) => void;
   onFormFieldError?: (error: string, field?: any) => void;
   onError?: (err: string) => void;
@@ -124,6 +130,12 @@ export class ChatWebSocket {
         this.listeners.onFormFieldUpdate?.(
           evt.field_update.field_id, 
           evt.field_update.value, 
+          evt.form_progress
+        );
+        break;
+      case 'form_field_focus':
+        this.listeners.onFormFieldFocus?.(
+          evt.field_focus.field_id, 
           evt.form_progress
         );
         break;
