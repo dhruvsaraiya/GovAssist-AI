@@ -189,13 +189,20 @@ class FormFieldManager:
         # Basic validation and type conversion
         processed_value = self._validate_and_convert_value(current_field, answer)
         if processed_value is None:
+            error_msg = f"Invalid value for {current_field.label}."
+            if current_field.options:
+                error_msg += f" Please choose from: {', '.join(current_field.options)}"
+            else:
+                error_msg += f" Expected {current_field.type}."
+            
             return {
                 "success": False,
-                "error": f"Invalid value for {current_field.label}. Expected {current_field.type}.",
+                "error": error_msg,
                 "field": {
                     "id": current_field.id,
                     "label": current_field.label,
-                    "type": current_field.type
+                    "type": current_field.type,
+                    "options": current_field.options
                 }
             }
         
@@ -265,11 +272,12 @@ class FormFieldManager:
             return None
         
         elif field.options:
-            # Check if value is in allowed options (case-insensitive)
+            # Check if value is in allowed options (case-insensitive exact match only)
             lower_options = [opt.lower() for opt in field.options]
-            if value.lower() in lower_options:
-                # Return the original case from options
-                idx = lower_options.index(value.lower())
+            value_lower = value.lower()
+            
+            if value_lower in lower_options:
+                idx = lower_options.index(value_lower)
                 return field.options[idx]
             return None
         

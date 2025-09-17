@@ -67,6 +67,32 @@ When you receive a ##FIELD_ANSWER## marker in a system message:
 3. If there were validation issues, be encouraging and offer gentle guidance
 4. Wait for the next field request
 
+USER INPUT INTERPRETATION FOR SELECT FIELDS:
+When asking for select/dropdown fields, you should:
+1. If user provides partial or similar input (e.g., "small" for "Shishu"), interpret their intent and provide the correct value
+2. Always confirm your interpretation: "I understand you mean [correct option]. Let me fill that in for you."
+3. Be helpful in mapping user's natural language to exact form values
+
+HANDLING VALIDATION ERRORS:
+When you receive a validation error message:
+1. Don't just repeat the error - interpret what the user likely meant
+2. Suggest the closest matching option and ask for confirmation
+3. Example: "I think you meant '[correct option]' - shall I fill that in?"
+
+HANDLING CONFIRMATIONS:
+When user confirms with "Yes", "Yeah", "Correct", "That's right", etc.:
+1. Provide a conversational response acknowledging the confirmation
+2. Then provide the exact form value using the special marker: ##FORM_VALUE:exact_value##
+3. Example: "Perfect! Let me fill that in for you. ##FORM_VALUE:exact_value##"
+
+PROVIDING FORM VALUES:
+When you need to provide a form field value (after confirmation or direct interpretation):
+1. Always include the ##FORM_VALUE:value## marker at the end of your response
+2. The value must be exactly one of the valid options
+3. Example responses:
+   - "I understand you mean the medium category. ##FORM_VALUE:exact_value##"
+   - "Got it! ##FORM_VALUE:exact_value##"
+
 RESPONSE GUIDELINES:
 - Be conversational, friendly, and professional
 - Explain technical terms or requirements clearly
@@ -74,10 +100,12 @@ RESPONSE GUIDELINES:
 - Provide context about why certain information is needed
 - Reassure users about data privacy and security when appropriate
 - Use encouraging language like "Great!", "Perfect!", "Thank you!"
+- Interpret user intent and map natural language to form values
 
 CRITICAL: 
-- NEVER include ##FIELD_REQUEST##, ##FIELD_ANSWER##, or any other ## markers in responses to users
-- These markers are for internal system communication only
+- NEVER include ##FIELD_REQUEST##, ##FIELD_ANSWER##, or other internal ## markers in responses to users
+- EXCEPTION: You MAY use ##FORM_VALUE:value## to provide form field values
+- This ##FORM_VALUE## marker helps the system process the field correctly
 - Always be conversational and helpful
 - Ask only one field at a time when in form filling mode
 """
@@ -280,6 +308,16 @@ class AzureRealtimeBridge:
             return clean_text, form_name
         return text, None
 
+    def _extract_form_value_from_text(self, text: str) -> tuple[str, Optional[str]]:
+        import re
+        form_value_pattern = r'##FORM_VALUE:([^#]+)##'
+        match = re.search(form_value_pattern, text, re.IGNORECASE)
+        if match:
+            form_value = match.group(1).strip()
+            clean_text = re.sub(form_value_pattern, '', text, flags=re.IGNORECASE).strip()
+            return clean_text, form_value
+        return text, None
+
     def _get_form_url(self, form_name: str) -> str:
         form_urls = {
             "aadhaar": "/forms/formAadhaar.html",
@@ -297,7 +335,12 @@ class AzureRealtimeBridge:
         else:
             logger.info("[azure] Response completed chars=%d (%s)", len(text), event_type)
 
+        # Extract form activation marker
         clean_text, form_name = self._extract_form_from_text(text)
+        
+        # Extract form value marker
+        clean_text, form_value = self._extract_form_value_from_text(clean_text)
+        
         message_payload = {
             "type": "assistant_message",
             "message": {
@@ -324,6 +367,16 @@ class AzureRealtimeBridge:
                     if field_prompt:
                         clean_text += f"\n\n{field_prompt}"
                         message_payload["message"]["content"] = clean_text
+
+        # Handle form value submission
+        if form_value and self._form_session_active:
+            logger.info(f"[DEBUG] AI provided form value: '{form_value}'")
+            # Process the form value as if it was a user input
+            success = await self._process_field_answer(form_value)
+            if success:
+                logger.info(f"[DEBUG] AI form value processed successfully")
+            else:
+                logger.info(f"[DEBUG] AI form value processing failed")
 
         await self._emit_frontend(message_payload)
         self._response_sent = True
@@ -515,11 +568,21 @@ class AzureRealtimeBridge:
                 "field": result.get("field")
             })
             
-            # Ask AI to re-prompt for the same field
+            # Ask AI to intelligently handle the validation error
             session = form_field_manager.get_active_session(self.user_id)
             if session and session.current_field:
                 field_prompt = session.get_next_field_prompt()
-                await self.send_system_message(f"There was an error with the user's input: {result['error']}. Please ask them again: {field_prompt}")
+                error_msg = result['error']
+                field_info = result.get('field', {})
+                
+                # Provide context to help AI interpret user intent
+                context_msg = f"The user said '{user_answer}' for {field_info.get('label', 'the current field')}."
+                if field_info.get('options'):
+                    context_msg += f" The valid options are: {', '.join(field_info['options'])}."
+                context_msg += f" Validation error: {error_msg}"
+                context_msg += " Please interpret what the user likely meant, suggest the correct option, and ask for confirmation. If they confirm, provide the exact form value."
+                
+                await self.send_system_message(context_msg)
             return False
     
     async def send_system_message(self, content: str):
