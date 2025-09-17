@@ -3,6 +3,7 @@ import { TouchableOpacity, Alert } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
+import Toast from 'react-native-toast-message';
 import { ChatScreen } from './src/screens/ChatScreen';
 import { WebFormScreen } from './src/screens/WebFormScreen';
 import { RootStackParamList } from './src/navigation/types';
@@ -66,6 +67,7 @@ export default function App() {
         />
         <Stack.Screen name="WebForm" component={WebFormScreen} options={{ title: 'Form Preview' }} />
       </Stack.Navigator>
+      <Toast />
     </NavigationContainer>
   );
 }

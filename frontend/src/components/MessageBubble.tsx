@@ -1,10 +1,11 @@
 import React from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity } from 'react-native';
 import { dbg } from '../services/debug';
 import { Audio } from 'expo-av';
 import { ChatMessage } from '../types/chat';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
+import Toast from 'react-native-toast-message';
 
 interface Props { message: ChatMessage }
 
@@ -16,10 +17,20 @@ export const MessageBubble: React.FC<Props> = ({ message }) => {
       const textToCopy = message.content || '';
       if (textToCopy.trim()) {
         await Clipboard.setStringAsync(textToCopy);
-        Alert.alert('Copied!', 'Message copied to clipboard');
+        Toast.show({
+          type: 'success',
+          text1: 'Copied!',
+          text2: 'Message copied to clipboard',
+          visibilityTime: 2000,
+        });
       }
     } catch (error) {
-      Alert.alert('Error', 'Failed to copy message');
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Failed to copy message',
+        visibilityTime: 3000,
+      });
     }
   };
 
