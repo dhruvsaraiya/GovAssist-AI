@@ -47,11 +47,12 @@ MUDRA/INCOME REQUESTS (keywords: mudra loan, business loan, income certificate, 
 
 FORM FILLING MODE:
 When you receive a system message starting with "Ask the user:", you should:
-1. Present the field request in a natural, conversational way
+1. Present ONLY the field request that was provided - do not add extra questions, in a natural conversational way
 2. If the request includes field descriptions, present them clearly
 3. If options are provided, explain them helpfully
 4. Be encouraging and supportive
 5. Do not include any ## markers in your response to users
+6. Do not ask about other form fields or categories - stick to the current field only
 
 COMBINED ACKNOWLEDGMENT AND FIELD REQUEST:
 When you receive a system message that includes both acknowledgment and field request:
@@ -60,6 +61,23 @@ When you receive a system message that includes both acknowledgment and field re
 3. Do NOT ask multiple questions or provide extra commentary
 4. Keep the response focused and concise
 
+PROCESSING USER RESPONSES DURING FORM FILLING:
+When a user provides ANY response while you're expecting a form field answer:
+1. FIRST check if they're asking a question - if so, answer it and re-ask for the field
+2. IF they're providing an answer (even conversationally), IMMEDIATELY extract the value and use ##FORM_VALUE:##
+3. Look for patterns like:
+   - "ohh that is 123" → "Perfect! ##FORM_VALUE:123##"
+   - "my name is john smith" → "Thank you! ##FORM_VALUE:john smith##"  
+   - "it would be mumbai" → "Great! ##FORM_VALUE:mumbai##"
+   - "that's 25000" → "Got it! ##FORM_VALUE:25000##"
+4. DO NOT ask for clarification if you can clearly identify the value
+5. BE AGGRESSIVE in extracting values - users often provide answers conversationally
+
+HANDLING USER QUESTIONS DURING FORM FILLING:
+When a user asks a question about a form field:
+1. Answer their question clearly and helpfully using any field descriptions provided
+2. Then ask them to provide the field value or let them know they can skip if it's optional
+
 FIELD ANSWER PROCESSING:
 When you receive a ##FIELD_ANSWER## marker in a system message:
 1. Briefly acknowledge the user's answer positively
@@ -67,11 +85,28 @@ When you receive a ##FIELD_ANSWER## marker in a system message:
 3. If there were validation issues, be encouraging and offer gentle guidance
 4. Wait for the next field request
 
+EXTRACTING VALUES FROM CONVERSATIONAL RESPONSES:
+When users provide answers in conversational form, you MUST extract the actual value and provide it using ##FORM_VALUE:##. Examples:
+- User says "ohh that is 123" → Extract "123" and respond: "Perfect! ##FORM_VALUE:123##"
+- User says "my enterprise name is dhruv ltd." → Extract "dhruv ltd." and respond: "Got it! ##FORM_VALUE:dhruv ltd.##"
+- User says "it's john smith" → Extract "john smith" and respond: "Thank you! ##FORM_VALUE:john smith##"
+- User says "that would be 25000" → Extract "25000" and respond: "Great! ##FORM_VALUE:25000##"
+- User says "yes it is mumbai" → Extract "mumbai" and respond: "Perfect! ##FORM_VALUE:mumbai##"
+
+CRITICAL VALUE EXTRACTION RULES:
+1. ALWAYS listen for the actual information the user is providing, regardless of how they phrase it
+2. Extract ONLY the relevant value (numbers, names, addresses, etc.) - ignore filler words like "ohh", "that is", "it's", "my", "the", etc.
+3. For names and text fields: preserve proper capitalization and spacing
+4. For numbers: extract only the numeric value
+5. For select/dropdown fields: map to the exact valid option after extraction
+6. ALWAYS use ##FORM_VALUE:extracted_value## when you identify a field value in the user's response
+
 USER INPUT INTERPRETATION FOR SELECT FIELDS:
 When asking for select/dropdown fields, you should:
 1. If user provides partial or similar input (e.g., "small" for "Shishu"), interpret their intent and provide the correct value
 2. Always confirm your interpretation: "I understand you mean [correct option]. Let me fill that in for you."
 3. Be helpful in mapping user's natural language to exact form values
+4. After mapping, use ##FORM_VALUE:exact_option## with the precise valid option
 
 HANDLING VALIDATION ERRORS:
 When you receive a validation error message:
@@ -88,7 +123,7 @@ When user confirms with "Yes", "Yeah", "Correct", "That's right", etc.:
 PROVIDING FORM VALUES:
 When you need to provide a form field value (after confirmation or direct interpretation):
 1. Always include the ##FORM_VALUE:value## marker at the end of your response
-2. The value must be exactly one of the valid options
+2. The value must be exactly one of the valid options for select fields, or the clean extracted value for text fields
 3. Example responses:
    - "I understand you mean the medium category. ##FORM_VALUE:exact_value##"
    - "Got it! ##FORM_VALUE:exact_value##"
@@ -317,6 +352,45 @@ class AzureRealtimeBridge:
             clean_text = re.sub(form_value_pattern, '', text, flags=re.IGNORECASE).strip()
             return clean_text, form_value
         return text, None
+
+    def _is_user_asking_question(self, text: str) -> bool:
+        """Detect if user is asking a question rather than providing a form field answer."""
+        text_lower = text.lower().strip()
+        
+        # Common question patterns
+        question_indicators = [
+            'what is', 'what does', 'what means', 'what\'s', 'what this means',
+            'how do', 'how to', 'how can', 'how should',
+            'why do', 'why is', 'why should',
+            'where do', 'where is', 'where can',
+            'when do', 'when is', 'when should',
+            'which', 'who is', 'who should',
+            'can you explain', 'please explain', 'explain',
+            'i don\'t understand', 'i don\'t know', 'not sure', 'i do not know',
+            'i do not understand', 'dont know', 'dont understand',
+            'help me', 'help', 'confused', 'unclear'
+        ]
+        
+        # Check if text starts with question words or contains question indicators
+        if text_lower.endswith('?'):
+            return True
+            
+        for indicator in question_indicators:
+            if text_lower.startswith(indicator) or indicator in text_lower:
+                return True
+        
+        # Check for uncertainty expressions that indicate questions
+        uncertainty_patterns = [
+            'what this means', 'what that means', 'what does this mean',
+            'what does that mean', 'i do not know what', 'i don\'t know what',
+            'no idea what', 'unsure what', 'not clear what'
+        ]
+        
+        for pattern in uncertainty_patterns:
+            if pattern in text_lower:
+                return True
+                
+        return False
 
     def _get_form_url(self, form_name: str) -> str:
         form_urls = {
@@ -628,17 +702,18 @@ class AzureRealtimeBridge:
         
         # Check if we're waiting for a form field answer
         if self._awaiting_field_answer and self._form_session_active:
-            logger.info(f"[DEBUG] Processing as field answer")
-            # Set to False BEFORE processing to avoid race condition
-            self._awaiting_field_answer = False
-            success = await self._process_field_answer(content)
-            if success:
-                logger.info(f"[DEBUG] Field answer processed successfully")
-                return  # Field was processed, don't send to AI
+            # Check if this is a question rather than an answer
+            if self._is_user_asking_question(content):
+                logger.info(f"[DEBUG] User is asking a question, not providing field answer")
+                # Send to AI to answer the question, but keep awaiting field answer
+                self._awaiting_field_answer = True  # Keep waiting for the actual answer
             else:
-                logger.info(f"[DEBUG] Field answer processing failed")
+                logger.info(f"[DEBUG] User provided potential field answer, sending to AI for value extraction")
+                # Send to AI for value extraction - the AI will use ##FORM_VALUE## to provide the clean value
+                # Don't set _awaiting_field_answer to False yet - let the AI handle extraction
+                # The AI will extract the value and provide it via ##FORM_VALUE## marker
         else:
-            logger.info(f"[DEBUG] Not processing as field answer, sending to AI")
+            logger.info(f"[DEBUG] Not in form filling mode, sending to AI")
         
         # Don't send new messages while AI is responding
         if self._ai_responding:
