@@ -6,10 +6,17 @@ export type WSState = 'connecting' | 'open' | 'closed';
 export interface AssistantDeltaEvent { type: 'assistant_delta'; delta: string }
 export interface AssistantMessageEvent { type: 'assistant_message'; message: ChatMessageLike }
 export interface FormOpenEvent { type: 'form_open'; url: string }
+export interface FormFieldUpdateEvent { 
+  type: 'form_field_update'; 
+  field_update: { field_id: string; value: any };
+  form_progress: { current_index: number; total_fields: number; percentage: number; is_complete: boolean }
+}
+export interface FormCompletedEvent { type: 'form_completed'; form_data: Record<string, any> }
+export interface FormFieldErrorEvent { type: 'form_field_error'; error: string; field?: any }
 export interface AckEvent { type: 'ack'; message_id: string }
 export interface ErrorEvent { type: 'error'; error: string }
 export interface PongEvent { type: 'pong' }
-export type IncomingEvent = AssistantDeltaEvent | AssistantMessageEvent | FormOpenEvent | AckEvent | ErrorEvent | PongEvent;
+export type IncomingEvent = AssistantDeltaEvent | AssistantMessageEvent | FormOpenEvent | FormFieldUpdateEvent | FormCompletedEvent | FormFieldErrorEvent | AckEvent | ErrorEvent | PongEvent;
 
 export interface ChatMessageLike {
   id?: string;
@@ -24,6 +31,9 @@ export interface WSListeners {
   onDelta?: (delta: string) => void;
   onAssistantMessage?: (msg: ChatMessageLike) => void;
   onFormOpen?: (url: string) => void;
+  onFormFieldUpdate?: (fieldId: string, value: any, progress: any) => void;
+  onFormCompleted?: (formData: Record<string, any>) => void;
+  onFormFieldError?: (error: string, field?: any) => void;
   onError?: (err: string) => void;
   debug?: boolean;
 }
@@ -109,6 +119,19 @@ export class ChatWebSocket {
         // Ensure form URLs use HTTP protocol
         const formUrl = evt.url.replace(/^ws:\/\//, 'http://');
         this.listeners.onFormOpen?.(formUrl);
+        break;
+      case 'form_field_update':
+        this.listeners.onFormFieldUpdate?.(
+          evt.field_update.field_id, 
+          evt.field_update.value, 
+          evt.form_progress
+        );
+        break;
+      case 'form_completed':
+        this.listeners.onFormCompleted?.(evt.form_data);
+        break;
+      case 'form_field_error':
+        this.listeners.onFormFieldError?.(evt.error, evt.field);
         break;
       case 'error':
         this.listeners.onError?.(evt.error);

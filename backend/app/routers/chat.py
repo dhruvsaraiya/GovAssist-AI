@@ -24,7 +24,9 @@ import time
 import websockets
 from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi.responses import JSONResponse
 from ..config import get_settings, Settings
+from ..form_manager import form_field_manager
 
 
 logger = logging.getLogger(__name__)
@@ -32,9 +34,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 system_prompt = """
-You are a government services assistant that helps users access official forms.
+You are a government services assistant that helps users access official forms and fill them step by step.
 
-CRITICAL: When users ask for ANY form or mention these keywords, you MUST end your response with the specified marker:
+FORM ACTIVATION:
+When users ask for ANY form or mention these keywords, you MUST end your response with the specified marker:
 
 AADHAAR REQUESTS (keywords: aadhaar, aadhar, identity card, id update, demographic update, address change):
 - Always end response with: ##FORM:aadhaar##
@@ -42,28 +45,25 @@ AADHAAR REQUESTS (keywords: aadhaar, aadhar, identity card, id update, demograph
 MUDRA/INCOME REQUESTS (keywords: mudra loan, business loan, income certificate, PMMY, financial assistance, loan application):  
 - Always end response with: ##FORM:income##
 
-REQUIRED FORMAT:
-1. Give a helpful 1-2 sentence response about the form
-2. Add the exact marker: ##FORM:formname##
+FORM FILLING MODE:
+When you receive a system message starting with "Ask the user:", you should ask the user exactly what is requested in a natural, conversational way. Do not include any markers in your response to the user.
 
-EXAMPLES:
-User: "give me mudra loan form"
-You: "I'll provide the Mudra loan application form for small business financing. ##FORM:income##"
+FIELD ANSWER PROCESSING:
+When you receive a ##FIELD_ANSWER## marker in a system message, briefly acknowledge the user's answer and wait for the next field request.
 
-User: "need aadhaar update form"  
-You: "Here's the Aadhaar update form to modify your demographic details. ##FORM:aadhaar##"
-
-User: "income certificate form"
-You: "I'll open the income certificate application form for you. ##FORM:income##"
-
-MANDATORY: The ##FORM:## marker is REQUIRED for all form requests - never skip it!
+CRITICAL: 
+- NEVER include ##FIELD_REQUEST##, ##FIELD_ANSWER##, or any other ## markers in responses to users
+- These markers are for internal system communication only
+- Always be conversational and helpful
+- Ask only one field at a time when in form filling mode
 """
 
 class AzureRealtimeBridge:
     """Manage a single Azure Realtime websocket connection and simple send helpers."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, user_id: str):
         self.settings = settings
+        self.user_id = user_id
         self.ws: Optional[websockets.WebSocketClientProtocol] = None  # type: ignore
         self._lock = asyncio.Lock()
         self._recv_task: Optional[asyncio.Task] = None
@@ -74,9 +74,13 @@ class AzureRealtimeBridge:
         self._current_response_id: Optional[str] = None
         self._response_sent: bool = False
         self._system_sent = False  # track if system instructions sent once
+        self._form_session_active = False
+        self._awaiting_field_answer = False
+        self._ai_responding = False
+        self._pending_requests = []
 
-        logger.info("AzureRealtimeBridge initialized (deployment=%s, api_version=%s)",
-                   self.settings.azure_openai_deployment_name, self.settings.openai_api_version)
+        logger.info("AzureRealtimeBridge initialized (deployment=%s, api_version=%s, user_id=%s)",
+                   self.settings.azure_openai_deployment_name, self.settings.openai_api_version, user_id)
 
     def _build_url(self) -> str:
         endpoint = (self.settings.azure_openai_endpoint or "").rstrip("/")
@@ -185,6 +189,7 @@ class AzureRealtimeBridge:
         if response_id and response_id != self._current_response_id:
             self._current_response_id = response_id
             self._response_sent = False
+            self._ai_responding = True
 
         if etype == "response.output_text.delta":
             delta = event.get("delta", "")
@@ -208,6 +213,10 @@ class AzureRealtimeBridge:
                 full = "".join(self._response_buffer)
                 self._response_buffer.clear()
                 await self._send_assistant_message(full, event_type="buffered_fallback")
+            
+            # Mark AI as no longer responding and process any pending requests
+            self._ai_responding = False
+            await self._process_pending_requests()
 
         elif etype == "error":
             err_msg = event.get("error", {}).get("message", "unknown_error")
@@ -273,13 +282,29 @@ class AzureRealtimeBridge:
             },
         }
 
+        # Handle form activation
         if form_name:
             form_url = self._get_form_url(form_name)
             if form_url:
                 message_payload["form"] = {"name": form_name, "url": form_url}
+                # Create form session and append first field request to the response
+                session = form_field_manager.create_form_session(self.user_id, form_name)
+                if session and session.current_field:
+                    self._form_session_active = True
+                    self._awaiting_field_answer = True
+                    
+                    # Append the first field request to the current response
+                    field_prompt = session.get_next_field_prompt()
+                    if field_prompt:
+                        clean_text += f"\n\n{field_prompt}"
+                        message_payload["message"]["content"] = clean_text
 
         await self._emit_frontend(message_payload)
         self._response_sent = True
+        self._ai_responding = False
+        
+        # Process any pending requests
+        await self._process_pending_requests()
 
     async def _emit_frontend(self, payload: dict):
         ws = self._frontend_websocket
@@ -288,8 +313,161 @@ class AzureRealtimeBridge:
                 await ws.send_text(json.dumps(payload))
             except Exception:
                 logger.exception("Failed sending payload to frontend")
+    
+    async def _process_pending_requests(self):
+        """Process any pending requests that were queued while AI was responding."""
+        if self._pending_requests and not self._ai_responding:
+            request = self._pending_requests.pop(0)
+            logger.info(f"[azure] Processing pending request: {request['type']}")
+            
+            if request['type'] == 'field_request':
+                await self._ask_for_next_field()
+            elif request['type'] == 'system_message':
+                await self.send_system_message(request['content'])
+
+    async def _delayed_field_request(self):
+        """Delay the field request to allow form activation response to complete first."""
+        await asyncio.sleep(0.5)  # Small delay to ensure form is opened
+        await self._ask_for_next_field()
+    
+    async def _ask_for_next_field(self):
+        """Ask the AI to request the next field from the user."""
+        # If AI is currently responding, queue the field request
+        if self._ai_responding:
+            logger.info(f"[azure] Queuing field request (AI busy)")
+            self._pending_requests.append({'type': 'field_request'})
+            return
+            
+        session = form_field_manager.get_active_session(self.user_id)
+        if not session:
+            logger.info(f"[DEBUG] No active session for user {self.user_id}")
+            return
+        if not session.current_field:
+            logger.info(f"[DEBUG] No current field for user {self.user_id}, session complete: {session.is_complete}")
+            return
+        
+        field = session.current_field
+        logger.info(f"[DEBUG] Asking for field: {field.id} ({field.label}) for user {self.user_id}")
+        
+        # Create a natural prompt for the AI to ask for the field
+        field_prompt = session.get_next_field_prompt()
+        
+        if field_prompt:
+            # Send the field request directly to the user via the AI
+            logger.info(f"[DEBUG] Sending field prompt: {field_prompt}")
+            await self.send_system_message(f"Ask the user: {field_prompt}")
+            self._awaiting_field_answer = True
+    
+    async def _process_field_answer(self, user_answer: str):
+        """Process user's answer to a form field."""
+        if not self._form_session_active:
+            return False
+        
+        session = form_field_manager.get_active_session(self.user_id)
+        if not session:
+            return False
+        
+        # Process the answer
+        result = form_field_manager.process_user_answer(self.user_id, user_answer)
+        
+        if result["success"]:
+            # Send field update to frontend
+            await self._emit_frontend({
+                "type": "form_field_update",
+                "field_update": {
+                    "field_id": result["completed_field"]["id"],
+                    "value": result["completed_field"]["value"]
+                },
+                "form_progress": result["form_progress"]
+            })
+            
+            # Send acknowledgment message without markers
+            field_label = result['completed_field'].get('label', result['completed_field']['id'])
+            await self.send_system_message(f"The user provided '{result['completed_field']['value']}' for {field_label}. Acknowledge this briefly.")
+            
+            # Check if form is complete
+            if result["form_progress"]["is_complete"]:
+                self._form_session_active = False
+                self._awaiting_field_answer = False
+                
+                # Send completion message to frontend
+                await self._emit_frontend({
+                    "type": "form_completed",
+                    "form_data": result["completed_form"]["data"]
+                })
+                
+                # Inform AI that form is complete
+                await self.send_system_message("The form has been completed successfully. Thank the user and let them know their information has been saved.")
+            else:
+                # Ask for next field
+                await self._ask_for_next_field()
+            
+            return True
+        else:
+            # Send error to frontend and ask AI to re-prompt
+            await self._emit_frontend({
+                "type": "form_field_error",
+                "error": result["error"],
+                "field": result.get("field")
+            })
+            
+            # Ask AI to re-prompt for the same field
+            session = form_field_manager.get_active_session(self.user_id)
+            if session and session.current_field:
+                field_prompt = session.get_next_field_prompt()
+                await self.send_system_message(f"There was an error with the user's input: {result['error']}. Please ask them again: {field_prompt}")
+            return False
+    
+    async def send_system_message(self, content: str):
+        """Send a system message to the AI for internal communication."""
+        # If AI is currently responding, queue the request
+        if self._ai_responding:
+            logger.info(f"[azure] Queuing system message (AI busy): {content[:50]}...")
+            self._pending_requests.append({'type': 'system_message', 'content': content})
+            return
+            
+        async with self._lock:
+            await self.ensure_connected()
+            if not self.ws:
+                raise RuntimeError("Azure realtime websocket missing after connect")
+            
+            logger.info(f"[azure] Sending system message: {content[:50]}...")
+            
+            # Create system message
+            create_item = {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": content}],
+                },
+            }
+            await self.ws.send(json.dumps(create_item))  # type: ignore
+            
+            # Request a response
+            response_req = {
+                "type": "response.create",
+                "response": {
+                    "modalities": ["text"],
+                    "conversation": "auto",
+                },
+            }
+            await self.ws.send(json.dumps(response_req))  # type: ignore
+            self._ai_responding = True
 
     async def send_user_message(self, content: str):
+        # Check if we're waiting for a form field answer
+        if self._awaiting_field_answer and self._form_session_active:
+            success = await self._process_field_answer(content)
+            if success:
+                self._awaiting_field_answer = False
+                return  # Field was processed, don't send to AI
+        
+        # Don't send new messages while AI is responding
+        if self._ai_responding:
+            logger.warning(f"[azure] Ignoring user message while AI is responding: {content[:50]}...")
+            return
+        
         async with self._lock:
             await self.ensure_connected()
             if not self.ws:
@@ -316,6 +494,7 @@ class AzureRealtimeBridge:
                 },
             }
             await self.ws.send(json.dumps(response_req))  # type: ignore
+            self._ai_responding = True
 
     async def close(self):
         self._closing = True
@@ -333,12 +512,25 @@ class AzureRealtimeBridge:
             self.ws = None
 
 
+@router.post("/restart")
+async def restart_all_sessions():
+    """Clear all form sessions."""
+    try:
+        # Clear all active sessions
+        form_field_manager.active_sessions.clear()
+        logger.info("[restart] Cleared all sessions")
+        return {"success": True, "message": "All sessions restarted successfully"}
+    except Exception as e:
+        logger.exception("[restart] Error clearing all sessions")
+        return {"success": False, "error": str(e)}
+
+
 @router.websocket("/ws")
 async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
     await ws.accept()
-    bridge = AzureRealtimeBridge(settings)
-    bridge._frontend_websocket = ws
     client_id = str(uuid.uuid4())
+    bridge = AzureRealtimeBridge(settings, client_id)
+    bridge._frontend_websocket = ws
     logger.info("[client %s] Connected", client_id)
     try:
         while True:

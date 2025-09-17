@@ -10,6 +10,7 @@ export interface FormWebViewProps {
   title?: string;
   autoFillData?: Record<string, any>;
   autoFillOnLoad?: boolean;
+  onFieldUpdate?: (fieldId: string, value: any) => void;
 }
 
 /*
@@ -18,14 +19,14 @@ export interface FormWebViewProps {
   - Adjustable via snap points and drag gestures
   - Designed to replace previous variants (FormSheet, TopFormShutter, SplitFormPanel)
 */
-export const FormWebView: React.FC<FormWebViewProps> = ({
+export const FormWebView = React.forwardRef<any, FormWebViewProps>(({
   url,
   onClose,
   initialSnap = 1,
   snapPoints = [0.25, 0.4, 0.55],
   title = 'Form',
   ...props
-}) => {
+}, ref) => {
   const screenH = Dimensions.get('window').height;
   const [currentSnap, setCurrentSnap] = useState(initialSnap);
   const fracAnim = useRef(new Animated.Value(snapPoints[initialSnap] || 0)).current;
@@ -88,6 +89,108 @@ export const FormWebView: React.FC<FormWebViewProps> = ({
       console.warn('[FormWebView] injectMapping failed', e);
     }
   }, []);
+
+  const updateSingleField = useCallback((fieldId: string, value: any) => {
+    console.log('[FormWebView] updateSingleField called:', fieldId, value);
+    try {
+      // More robust script that tries multiple selection methods and handles different input types
+      const script = `(function(){
+        console.log('Trying to update field:', '${fieldId}', 'with value:', ${JSON.stringify(value)});
+        
+        // Try multiple ways to find the element
+        let el = document.getElementById('${fieldId}') || 
+                 document.querySelector('[name="${fieldId}"]') ||
+                 document.querySelector('input[id*="${fieldId}"]') ||
+                 document.querySelector('input[name*="${fieldId}"]') ||
+                 document.querySelector('select[id*="${fieldId}"]') ||
+                 document.querySelector('select[name*="${fieldId}"]') ||
+                 document.querySelector('textarea[id*="${fieldId}"]') ||
+                 document.querySelector('textarea[name*="${fieldId}"]');
+        
+        console.log('Found element:', el, 'tagName:', el ? el.tagName : 'null');
+        
+        if(el){ 
+          // Clear any existing value first
+          el.value = '';
+          
+          // Set the new value
+          el.value = ${JSON.stringify(value)};
+          
+          // Focus the element to ensure it's active
+          el.focus();
+          
+          // Trigger multiple events to ensure compatibility
+          el.dispatchEvent(new Event('focus', {bubbles: true}));
+          el.dispatchEvent(new Event('input', {bubbles: true}));
+          el.dispatchEvent(new Event('change', {bubbles: true}));
+          el.dispatchEvent(new Event('blur', {bubbles: true}));
+          
+          // For React forms, also trigger React's synthetic events
+          if (el._valueTracker) {
+            el._valueTracker.setValue('');
+          }
+          
+          // Highlight the field to show it was updated
+          const originalBg = el.style.backgroundColor;
+          el.style.backgroundColor = '#90EE90';
+          el.style.transition = 'background-color 0.3s';
+          
+          setTimeout(function() {
+            el.style.backgroundColor = originalBg;
+          }, 2000);
+          
+          console.log('Field updated successfully:', '${fieldId}', 'final value:', el.value);
+          return true;
+        } else {
+          console.warn('Element not found for field:', '${fieldId}');
+          // Log all form elements for debugging
+          const allInputs = document.querySelectorAll('input, select, textarea');
+          console.log('Available form elements:', Array.from(allInputs).map(el => ({
+            id: el.id,
+            name: el.name,
+            type: el.type || el.tagName
+          })));
+          return false;
+        }
+      })(); true;`;
+      
+      if (Platform.OS === 'web') {
+        // For web, try to access iframe content directly
+        const iframe = document.querySelector('iframe') as HTMLIFrameElement;
+        if (iframe && iframe.contentDocument) {
+          console.log('[FormWebView] Executing script in iframe content');
+          const scriptEl = iframe.contentDocument.createElement('script');
+          scriptEl.textContent = script;
+          iframe.contentDocument.head.appendChild(scriptEl);
+          iframe.contentDocument.head.removeChild(scriptEl);
+        } else if (iframe && iframe.contentWindow) {
+          console.log('[FormWebView] Posting message to iframe');
+          iframe.contentWindow.postMessage({
+            type: 'UPDATE_FIELD',
+            fieldId: fieldId,
+            value: value
+          }, '*');
+        } else {
+          console.warn('[FormWebView] Iframe not accessible');
+        }
+      } else {
+        // For mobile WebView - this should work properly
+        console.log('[FormWebView] Injecting JavaScript into WebView');
+        webviewRef.current?.injectJavaScript(script);
+      }
+      
+      props.onFieldUpdate?.(fieldId, value);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[FormWebView] updateSingleField failed', e);
+    }
+  }, [props]);
+
+  // Expose methods via ref
+  React.useImperativeHandle(ref, () => ({
+    updateField: updateSingleField,
+    fillForm: injectMapping
+  }), [updateSingleField, injectMapping]);
 
   const onWebviewLoad = useCallback(() => {
     if (props.autoFillOnLoad && props.autoFillData) {
@@ -177,7 +280,7 @@ export const FormWebView: React.FC<FormWebViewProps> = ({
       </View>
     </Animated.View>
   );
-};
+});
 
 const styles = StyleSheet.create({
   container: { width:'100%', backgroundColor:'#f1f5f9', borderBottomWidth:1, borderColor:'#e2e8f0' },

@@ -2,30 +2,226 @@
   "form_id": "formIncome",
   "title": "Mudra Loan Application (Demo)",
   "fields": [
-    { "id": "enterprise_name", "label": "Name of the Enterprise", "type": "text", "required": true },
-    { "id": "application_sl_no", "label": "Application Sl. No.", "type": "text", "required": false },
-    { "id": "branch_name", "label": "Name of the Branch", "type": "text", "required": false },
-    { "id": "category", "label": "Category", "type": "text", "required": true },
-    { "id": "constitution", "label": "Constitution", "type": "text", "required": true },
-    { "id": "address_line1", "label": "Current Business Address", "type": "text", "required": true },
-    { "id": "state", "label": "State", "type": "text", "required": true },
-    { "id": "pin_code", "label": "PIN code", "type": "number", "required": true },
-    { "id": "premises", "label": "Business Premises", "type": "text", "required": true },
-    { "id": "telephone", "label": "Telephone No.", "type": "text", "required": false },
-    { "id": "mobile", "label": "Mobile No.", "type": "text", "required": true },
-    { "id": "email", "label": "Email", "type": "text", "required": false },
-    { "id": "business_activity", "label": "Business Activity", "type": "text", "required": true },
-    { "id": "date_commencement", "label": "Date of Commencement", "type": "date", "required": false },
-    { "id": "unit_registered", "label": "Unit Registered", "type": "text", "required": false },
-    { "id": "registration_no", "label": "Registration No", "type": "text", "required": false },
-    { "id": "registered_office_address", "label": "Registered Office Address", "type": "text", "required": false },
-    { "id": "skill_certified", "label": "Skill Certified", "type": "text", "required": false },
-    { "id": "social_category", "label": "Social Category", "type": "text", "required": false },
-    { "id": "p1_name", "label": "P1 Name", "type": "text", "required": false },
-    { "id": "p1_dob", "label": "P1 DOB", "type": "date", "required": false },
-    { "id": "p1_sex", "label": "P1 Sex", "type": "text", "required": false },
-    { "id": "p1_address", "label": "P1 Address", "type": "text", "required": false },
-    { "id": "p1_qual", "label": "P1 Qualification", "type": "text", "required": false },
-    { "id": "p1_exp", "label": "P1 Experience", "type": "number", "required": false }
+    { 
+      "id": "enterprise_name", 
+      "label": "Name of the Enterprise", 
+      "type": "text", 
+      "required": true,
+      "description": "The official name of your business or enterprise as it should appear on documents"
+    },
+    { 
+      "id": "application_sl_no", 
+      "label": "Application Sl. No.", 
+      "type": "text", 
+      "required": false,
+      "description": "Application serial number (leave blank if not assigned yet)"
+    },
+    { 
+      "id": "branch_name", 
+      "label": "Name of the Branch", 
+      "type": "text", 
+      "required": false,
+      "description": "The bank branch where you're applying for the loan"
+    },
+    { 
+      "id": "category", 
+      "label": "Category", 
+      "type": "select", 
+      "required": true,
+      "description": "The Mudra loan category based on your loan amount requirement",
+      "options": ["Shishu", "Kishor", "Tarun"],
+      "option_descriptions": {
+        "Shishu": "Up to ₹50,000 - for small businesses and startups",
+        "Kishor": "₹50,001 to ₹5,00,000 - for growing small businesses", 
+        "Tarun": "₹5,00,001 to ₹10,00,000 - for established businesses"
+      }
+    },
+    { 
+      "id": "constitution", 
+      "label": "Constitution", 
+      "type": "select", 
+      "required": true,
+      "description": "The legal structure of your business",
+      "options": ["Proprietary", "Partnership", "Private Limited", "Public Limited", "LLP"],
+      "option_descriptions": {
+        "Proprietary": "Single owner business",
+        "Partnership": "Business owned by multiple partners",
+        "Private Limited": "Private limited company",
+        "Public Limited": "Public limited company",
+        "LLP": "Limited Liability Partnership"
+      }
+    },
+    { 
+      "id": "address_line1", 
+      "label": "Current Business Address", 
+      "type": "text", 
+      "required": true,
+      "description": "The complete address where your business currently operates"
+    },
+    { 
+      "id": "state", 
+      "label": "State", 
+      "type": "text", 
+      "required": true,
+      "description": "The state where your business is located"
+    },
+    { 
+      "id": "pin_code", 
+      "label": "PIN Code", 
+      "type": "number", 
+      "required": true,
+      "description": "6-digit postal code of your business location"
+    },
+    { 
+      "id": "premises", 
+      "label": "Business Premises", 
+      "type": "select", 
+      "required": true,
+      "description": "Whether you own or rent your business premises",
+      "options": ["Owned", "Rented", "Leased", "Shared"],
+      "option_descriptions": {
+        "Owned": "You own the business premises",
+        "Rented": "You rent the business premises",
+        "Leased": "Business premises is on lease",
+        "Shared": "Shared premises with others"
+      }
+    },
+    { 
+      "id": "telephone", 
+      "label": "Telephone No.", 
+      "type": "text", 
+      "required": false,
+      "description": "Landline phone number (optional)"
+    },
+    { 
+      "id": "mobile", 
+      "label": "Mobile No.", 
+      "type": "text", 
+      "required": true,
+      "description": "Your primary mobile number for communication"
+    },
+    { 
+      "id": "email", 
+      "label": "Email", 
+      "type": "email", 
+      "required": false,
+      "description": "Your email address for correspondence (optional)"
+    },
+    { 
+      "id": "business_activity", 
+      "label": "Business Activity", 
+      "type": "text", 
+      "required": true,
+      "description": "Describe what your business does - the main products or services you provide"
+    },
+    { 
+      "id": "date_commencement", 
+      "label": "Date of Commencement", 
+      "type": "date", 
+      "required": false,
+      "description": "When did your business start operations? (YYYY-MM-DD format)"
+    },
+    { 
+      "id": "unit_registered", 
+      "label": "Unit Registered", 
+      "type": "select", 
+      "required": false,
+      "description": "Is your business unit registered with any authority?",
+      "options": ["Yes", "No"],
+      "option_descriptions": {
+        "Yes": "Business is registered (provide registration details)",
+        "No": "Business is not registered yet"
+      }
+    },
+    { 
+      "id": "registration_no", 
+      "label": "Registration No", 
+      "type": "text", 
+      "required": false,
+      "description": "Business registration number (if registered)"
+    },
+    { 
+      "id": "registered_office_address", 
+      "label": "Registered Office Address", 
+      "type": "text", 
+      "required": false,
+      "description": "Official registered address of your business (if different from current address)"
+    },
+    { 
+      "id": "skill_certified", 
+      "label": "Skill Certified", 
+      "type": "select", 
+      "required": false,
+      "description": "Do you have any skill certification related to your business?",
+      "options": ["Skilled", "Unskilled", "Certified"],
+      "option_descriptions": {
+        "Skilled": "You have relevant skills but no formal certification",
+        "Unskilled": "You are learning the business skills",
+        "Certified": "You have formal certification for your business skills"
+      }
+    },
+    { 
+      "id": "social_category", 
+      "label": "Social Category", 
+      "type": "select", 
+      "required": false,
+      "description": "Your social category for government benefits",
+      "options": ["General", "SC", "ST", "OBC", "Minority"],
+      "option_descriptions": {
+        "General": "General category",
+        "SC": "Scheduled Caste",
+        "ST": "Scheduled Tribe", 
+        "OBC": "Other Backward Classes",
+        "Minority": "Minority community"
+      }
+    },
+    { 
+      "id": "p1_name", 
+      "label": "Promoter/Partner Name", 
+      "type": "text", 
+      "required": false,
+      "description": "Name of the main promoter or business partner"
+    },
+    { 
+      "id": "p1_dob", 
+      "label": "Promoter Date of Birth", 
+      "type": "date", 
+      "required": false,
+      "description": "Date of birth of the promoter/partner (YYYY-MM-DD format)"
+    },
+    { 
+      "id": "p1_sex", 
+      "label": "Promoter Gender", 
+      "type": "select", 
+      "required": false,
+      "description": "Gender of the promoter/partner",
+      "options": ["Male", "Female", "Other"],
+      "option_descriptions": {
+        "Male": "Male",
+        "Female": "Female",
+        "Other": "Other/Prefer not to say"
+      }
+    },
+    { 
+      "id": "p1_address", 
+      "label": "Promoter Address", 
+      "type": "text", 
+      "required": false,
+      "description": "Residential address of the promoter/partner"
+    },
+    { 
+      "id": "p1_qual", 
+      "label": "Promoter Qualification", 
+      "type": "text", 
+      "required": false,
+      "description": "Educational qualification of the promoter/partner"
+    },
+    { 
+      "id": "p1_exp", 
+      "label": "Promoter Experience", 
+      "type": "number", 
+      "required": false,
+      "description": "Years of relevant business experience of the promoter/partner"
+    }
   ]
 }

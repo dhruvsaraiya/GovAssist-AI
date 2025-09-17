@@ -76,3 +76,26 @@ export async function sendChatMessage(payload: SendMessagePayload): Promise<Back
     throw new Error('Invalid JSON in response');
   }
 }
+
+export async function restartAllSessions(): Promise<{ success: boolean; message?: string; error?: string }> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/chat/restart`, { 
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    
+    const data = await res.json();
+    return data;
+  } catch (e: any) {
+    return {
+      success: false,
+      error: e?.message || 'Failed to restart sessions'
+    };
+  }
+}

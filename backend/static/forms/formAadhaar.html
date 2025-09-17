@@ -73,6 +73,32 @@
         return { ok: false, error: String(e) };
       }
     };
+
+    // Listen for individual field updates from parent frame
+    window.addEventListener('message', function(event) {
+      if (event.data && event.data.type === 'UPDATE_FIELD') {
+        console.log('Received field update:', event.data.fieldId, event.data.value);
+        const el = document.getElementById(event.data.fieldId) || document.querySelector('[name="' + event.data.fieldId + '"]');
+        if (el) {
+          if (el.tagName === 'SELECT') {
+            el.value = event.data.value;
+          } else {
+            el.value = event.data.value;
+          }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          console.log('Field updated successfully:', event.data.fieldId);
+          
+          // Highlight the field temporarily to show it was updated
+          el.style.backgroundColor = '#e6f3ff';
+          setTimeout(function() {
+            el.style.backgroundColor = '';
+          }, 1000);
+        } else {
+          console.warn('Element not found for field:', event.data.fieldId);
+        }
+      }
+    });
   </script>
 </body>
 </html>

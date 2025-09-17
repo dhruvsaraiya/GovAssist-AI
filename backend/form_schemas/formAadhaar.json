@@ -1,0 +1,16 @@
+{
+  "form_id": "formAadhaar",
+  "title": "Aadhaar Update Form (Demo)",
+  "fields": [
+    { "id": "applicant_name", "label": "Applicant Name", "type": "text", "required": true },
+    { "id": "father_name", "label": "Father's Name", "type": "text", "required": true },
+    { "id": "date_of_birth", "label": "Date of Birth", "type": "date", "required": true },
+    { "id": "gender", "label": "Gender", "type": "text", "required": true, "options": ["Male", "Female", "Other"] },
+    { "id": "address_line1", "label": "Address Line 1", "type": "text", "required": true },
+    { "id": "city", "label": "City", "type": "text", "required": true },
+    { "id": "state", "label": "State", "type": "text", "required": true },
+    { "id": "pin_code", "label": "PIN Code", "type": "number", "required": true },
+    { "id": "mobile", "label": "Mobile Number", "type": "text", "required": true },
+    { "id": "email", "label": "Email Address", "type": "email", "required": false }
+  ]
+}

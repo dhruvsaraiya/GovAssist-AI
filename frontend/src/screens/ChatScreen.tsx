@@ -26,7 +26,9 @@ export const ChatScreen: React.FC = () => {
   const streamingMsgRef = useRef<ChatMessage | null>(null);
   const [activeFormUrl, setActiveFormUrl] = useState<string | null>(null);
   const [activeFormMapping, setActiveFormMapping] = useState<Record<string, any> | null>(null);
+  const [formProgress, setFormProgress] = useState<any>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
+  const formWebViewRef = useRef<any>(null);
 
   const appendBackendMessages = (resp: BackendChatResponse) => {
     let newFormUrl: string | null = null;
@@ -99,12 +101,44 @@ export const ChatScreen: React.FC = () => {
       },
       onFormOpen: (url) => {
         setActiveFormUrl(url);
-        try {
-          const fname = url.split('/').pop() || '';
-          if (fname.includes('formAadhaar')) setActiveFormMapping(aadhaarMapping as any);
-          else if (fname.includes('formIncome')) setActiveFormMapping(incomeMapping as any);
-          else setActiveFormMapping(null);
-        } catch { setActiveFormMapping(null); }
+        // No longer auto-fill on form open - wait for field-by-field updates
+        setActiveFormMapping(null);
+      },
+      onFormFieldUpdate: (fieldId, value, progress) => {
+        // eslint-disable-next-line no-console
+        console.log('[form] field update:', fieldId, value, progress);
+        setFormProgress(progress);
+        
+        // Update the specific field in the form
+        if (formWebViewRef.current) {
+          formWebViewRef.current.updateField(fieldId, value);
+        }
+      },
+      onFormCompleted: (formData) => {
+        // eslint-disable-next-line no-console
+        console.log('[form] completed:', formData);
+        
+        // Optionally show completion message or close form
+        setMessages(prev => [...prev, {
+          id: 'form-complete-' + Date.now(),
+          role: 'assistant',
+          content: 'Form completed successfully! All your information has been saved.',
+          createdAt: Date.now(),
+          type: 'text'
+        }]);
+      },
+      onFormFieldError: (error, field) => {
+        // eslint-disable-next-line no-console
+        console.warn('[form] field error:', error, field);
+        
+        // Show error message in chat
+        setMessages(prev => [...prev, {
+          id: 'form-error-' + Date.now(),
+          role: 'assistant',
+          content: `Error: ${error}. Please try again.`,
+          createdAt: Date.now(),
+          type: 'text'
+        }]);
       },
       onError: (err) => {
         // eslint-disable-next-line no-console
@@ -210,7 +244,22 @@ export const ChatScreen: React.FC = () => {
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       {activeFormUrl && (
-        <FormWebView url={activeFormUrl} autoFillData={activeFormMapping || undefined} autoFillOnLoad={!!activeFormMapping} onClose={() => { setActiveFormUrl(null); setActiveFormMapping(null); }} />
+        <FormWebView 
+          ref={formWebViewRef}
+          url={activeFormUrl} 
+          autoFillData={activeFormMapping || undefined} 
+          autoFillOnLoad={false}
+          title={formProgress ? `Form Progress: ${Math.round(formProgress.percentage)}%` : 'Form'}
+          onClose={() => { 
+            setActiveFormUrl(null); 
+            setActiveFormMapping(null); 
+            setFormProgress(null);
+          }} 
+          onFieldUpdate={(fieldId, value) => {
+            // eslint-disable-next-line no-console
+            console.log('[chat] field updated:', fieldId, value);
+          }}
+        />
       )}
       <View style={styles.chatArea}>
         <FlatList
@@ -229,18 +278,7 @@ export const ChatScreen: React.FC = () => {
         <TouchableOpacity style={styles.iconBtn} onPress={toggleRecording}>
           <Ionicons name={recording ? 'stop-circle-outline' : 'mic-outline'} size={22} color={recording ? '#dc2626' : '#374151'} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.iconBtn} onPress={() => { 
-            setActiveFormUrl(`${BACKEND_URL}/forms/formAadhaar.html`); 
-            setActiveFormMapping(aadhaarMapping as any); 
-          }}>
-          <Ionicons name="document-text-outline" size={20} color="#374151" />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.iconBtn} onPress={() => { 
-            setActiveFormUrl(`${BACKEND_URL}/forms/formIncome.html`); 
-            setActiveFormMapping(incomeMapping as any); 
-          }}>
-          <Ionicons name="list-outline" size={20} color="#374151" />
-        </TouchableOpacity>
+
         <TextInput
           style={styles.textInput}
             placeholder={wsState === 'open' ? 'Type a message' : `Connecting... (${wsState})`}
