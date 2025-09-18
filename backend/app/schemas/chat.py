@@ -13,6 +13,10 @@ class ChatMessage(BaseModel):
     media_uri: Optional[str] = None
     # Optional URL to a government or assistance form that the client can render in a WebView.
     form_url: Optional[str] = None
+    # Audio data as base64 encoded PCM16 for audio messages
+    audio_data: Optional[str] = None
+    # Form markers separated from conversational content for audio responses
+    form_markers: Optional[str] = None
 
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]

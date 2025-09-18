@@ -6,6 +6,7 @@ export type WSState = 'connecting' | 'open' | 'closed';
 export interface AssistantDeltaEvent { type: 'assistant_delta'; delta: string }
 export interface AssistantMessageEvent { type: 'assistant_message'; message: ChatMessageLike }
 export interface UserAudioTranscriptEvent { type: 'user_audio_transcript'; transcript: string }
+export interface AssistantAudioEvent { type: 'assistant_audio'; audio_data: string }
 export interface FormOpenEvent { type: 'form_open'; url: string }
 export interface FormFieldUpdateEvent { 
   type: 'form_field_update'; 
@@ -22,7 +23,7 @@ export interface FormFieldErrorEvent { type: 'form_field_error'; error: string; 
 export interface AckEvent { type: 'ack'; message_id: string }
 export interface ErrorEvent { type: 'error'; error: string }
 export interface PongEvent { type: 'pong' }
-export type IncomingEvent = AssistantDeltaEvent | AssistantMessageEvent | UserAudioTranscriptEvent | FormOpenEvent | FormFieldUpdateEvent | FormFieldFocusEvent | FormCompletedEvent | FormFieldErrorEvent | AckEvent | ErrorEvent | PongEvent;
+export type IncomingEvent = AssistantDeltaEvent | AssistantMessageEvent | UserAudioTranscriptEvent | AssistantAudioEvent | FormOpenEvent | FormFieldUpdateEvent | FormFieldFocusEvent | FormCompletedEvent | FormFieldErrorEvent | AckEvent | ErrorEvent | PongEvent;
 
 export interface ChatMessageLike {
   id?: string;
@@ -38,6 +39,7 @@ export interface WSListeners {
   onDelta?: (delta: string) => void;
   onAssistantMessage?: (msg: ChatMessageLike) => void;
   onUserAudioTranscript?: (transcript: string) => void;
+  onAssistantAudio?: (audioData: string) => void;
   onFormOpen?: (url: string) => void;
   onFormFieldUpdate?: (fieldId: string, value: any, progress: any) => void;
   onFormFieldFocus?: (fieldId: string, progress: any) => void;
@@ -123,8 +125,11 @@ export class ChatWebSocket {
           const formUrl = `http://${BACKEND_HOST}:${BACKEND_PORT}${evt.form.url}`;
           this.listeners.onFormOpen?.(formUrl);
         }
+        // Handle audio data in assistant messages
+        if (evt.message && evt.message.audio_data) {
+          this.listeners.onAssistantAudio?.(evt.message.audio_data);
+        }
         break;
-      // Audio delta removed - now handled as complete audio messages
       case 'user_audio_transcript':
         this.listeners.onUserAudioTranscript?.(evt.transcript || '');
         break;

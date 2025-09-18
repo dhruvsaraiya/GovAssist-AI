@@ -46,12 +46,45 @@ You are a government services assistant that helps users access official forms a
 RESPONSE MODALITY AND LANGUAGE MATCHING:
 - ALWAYS respond in the SAME LANGUAGE as the user's input (English → English, Hindi → Hindi, etc.)
 - ALWAYS match the user's input modality: Audio input → Audio response, Text input → Text response
+- For AUDIO responses: Speak naturally and conversationally while INCLUDING form markers in text
+- For TEXT responses: Write naturally and conversationally while INCLUDING form markers in text
+- Form markers (##FORM:##, ##FORM_VALUE:##, ##QUESTION_ANSWERED##) are ALWAYS text-based instructions to the backend system, separate from your conversational response
 - Provide natural, conversational responses that feel human and supportive
 
+AUDIO INPUT/OUTPUT HANDLING:
+- When user provides audio input, respond with natural speech audio AND text content
+- CRITICAL: For audio responses, you MUST provide BOTH:
+  1. Natural spoken audio for the user to hear
+  2. Text content with form markers for backend processing
+- Audio responses should be warm, conversational, and natural-sounding
+- Text content should include the same message PLUS form markers (##FORM:##, ##FORM_VALUE:##, ##QUESTION_ANSWERED##)
+- Form markers are processed by backend and never spoken aloud
+
+AUDIO FORM ACTIVATION EXAMPLES:
+- User audio: "I need aadhaar" → Audio: "I'll help you with your Aadhaar! Let me open the form." + Text: "I'll help you with your Aadhaar! Let me open the form. ##FORM:aadhaar##"
+- User audio: "mudra loan" → Audio: "Let's get your Mudra loan application started!" + Text: "Let's get your Mudra loan application started! ##FORM:income##"
+- User audio: "income certificate" → Audio: "I'll help with your income certificate!" + Text: "I'll help with your income certificate! ##FORM:income##"
+
+NEVER ask "which form?" - ALWAYS identify the form from context and activate it immediately!
+
 FORM Operations:
-1. FORM ACTIVATION - When users request forms, end response with appropriate marker:
-   - AADHAAR requests (keywords: aadhaar, aadhar, identity card, id update, demographic update, address change) → ##FORM:aadhaar##
-   - MUDRA/INCOME requests (keywords: mudra loan, business loan, income certificate, PMMY, financial assistance, loan application) → ##FORM:income##
+1. FORM ACTIVATION - When users request forms, ALWAYS end response with appropriate marker:
+   
+   AADHAAR FORM TRIGGERS (always respond with ##FORM:aadhaar##):
+   - "aadhaar", "aadhar", "adhaar" (any spelling variation)
+   - "identity card", "ID card", "national ID"
+   - "demographic update", "address change", "phone update" 
+   - "aadhaar correction", "aadhaar enrollment"
+   - ANY mention of aadhaar-related services
+   
+   MUDRA/INCOME FORM TRIGGERS (always respond with ##FORM:income##):
+   - "mudra loan", "PMMY", "Pradhan Mantri Mudra Yojana"
+   - "business loan", "startup loan", "micro finance"
+   - "income certificate", "income proof"
+   - "financial assistance", "loan application"
+   - ANY business or income-related form requests
+
+   IMPORTANT: If user mentions ANYTHING related to these forms, immediately activate the appropriate form with the marker!
 
 2. FORM FIELD REQUESTS - When you receive "Ask the user: [field prompt]":
    - Present the field request naturally and conversationally
@@ -136,6 +169,12 @@ AMBIGUOUS AND FUZZY RESPONSE HANDLING:
    - Handle typos and speech recognition errors
    - Map colloquial terms to formal options
    - Support multiple languages and transliterations
+
+FORM RECOGNITION PRIORITY:
+- NEVER ask "which form do you need?" when the user clearly mentions a specific service
+- ALWAYS activate the appropriate form immediately when keywords are detected
+- If genuinely unclear, default to the most likely form based on context
+- Be proactive, not reactive - anticipate user needs
 
 CONVERSATIONAL STYLE SUPPORT:
 - Accept all conversational responses: "uhh that would be...", "I think it's...", "probably..."
@@ -245,13 +284,15 @@ class AzureRealtimeBridge:
 
         logger.info("[azure] Connected (%.2f ms)", (time.perf_counter() - connect_started) * 1000)
 
-        # Configure session for text and audio
+        # Configure session for text and audio with explicit instructions
+        enhanced_instructions = system_prompt + "\n\nIMPORTANT: When responding with audio, you MUST also provide the same content as text with form markers. Always generate both text and audio output when audio is requested."
+        
         session_cfg = {
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
-                "instructions": system_prompt,
-                "voice": "alloy",
+                "instructions": enhanced_instructions,
+                "voice": "echo",
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "input_audio_transcription": {
@@ -304,24 +345,26 @@ class AzureRealtimeBridge:
     async def _handle_event(self, event: dict):
         etype = event.get("type")
         response_id = event.get("response_id")
-        logger.info("[azure<-event] type=%s keys=%s", etype, list(event.keys()))
+        logger.info("[azure<-event] type=%s keys=%s response_id=%s", etype, list(event.keys()), response_id)
 
         if response_id and response_id != self._current_response_id:
             self._current_response_id = response_id
             self._response_sent = False
             self._ai_responding = True
             self._receiving_audio = False  # Reset audio flag for new response
+            logger.info(f"[azure] New response started: {response_id}")
 
         if etype == "response.output_text.delta":
             delta = event.get("delta", "")
             if delta:
+                # Always buffer text for form marker processing
                 self._response_buffer.append(delta)
-                # Only send text deltas to frontend if we're not also receiving audio
-                # For audio responses, we process text for form markers but don't show it in UI
+                logger.info(f"[azure] Text delta: '{delta}' (len={len(delta)}, receiving_audio={self._receiving_audio}, buffer_len={len(self._response_buffer)})")
+                # Only emit text deltas if we're not receiving audio
                 if not self._receiving_audio:
                     await self._emit_frontend({"type": "assistant_delta", "delta": delta})
                 else:
-                    logger.debug(f"[azure] Text delta for audio response (form processing only): {delta}")
+                    logger.info(f"[azure] Text delta for audio response (form processing): '{delta}'")
 
         elif etype == "response.audio.delta":
             # Collect audio data for complete audio message
@@ -331,13 +374,20 @@ class AzureRealtimeBridge:
                 if not self._receiving_audio:
                     self._receiving_audio = True
                     self._audio_buffer = []
-                    logger.info("[azure] Started receiving audio response")
+                    logger.info(f"[azure] Started receiving audio response (text_buffer_len={len(self._response_buffer)})")
                 
                 # Buffer audio data instead of streaming
                 self._audio_buffer.append(audio_data)
+                logger.debug(f"[azure] Audio delta received (len={len(audio_data)}, total_audio_chunks={len(self._audio_buffer)})")
 
-        # Remove audio transcript handling - we stream audio directly
-        # The text processing will handle form markers from text responses
+        elif etype == "response.text.delta":
+            # Alternative text delta event type
+            delta = event.get("delta", "")
+            if delta:
+                self._response_buffer.append(delta)
+                logger.info(f"[azure] response.text.delta: '{delta}' (receiving_audio={self._receiving_audio})")
+                if not self._receiving_audio:
+                    await self._emit_frontend({"type": "assistant_delta", "delta": delta})
 
         elif etype == "conversation.item.input_audio_transcription.completed":
             # Handle completed transcription of user audio input
@@ -351,12 +401,25 @@ class AzureRealtimeBridge:
         elif etype == "response.output_item.done" and not self._response_sent:
             # Only process text output if we haven't sent a response yet
             text = self._extract_text_from_output_item(event.get("item", {}))
+            logger.info(f"[azure] response.output_item.done - extracted text: '{text}' (len={len(text) if text else 0})")
             if text:
                 message_id = event.get("item", {}).get("id")
                 await self._send_assistant_message(text, message_id, "output_item")
+        
+        elif etype == "response.output_item.added":
+            # Check if this event contains text content we should process
+            item = event.get("item", {})
+            text = self._extract_text_from_output_item(item)
+            logger.info(f"[azure] response.output_item.added - extracted text: '{text}' (len={len(text) if text else 0})")
+            if text and self._receiving_audio:
+                # Add to response buffer for form marker processing
+                self._response_buffer.append(text)
+                logger.info(f"[azure] Added text from output_item.added to buffer for audio response: '{text}'")
 
         elif etype in {"response.completed", "response.done"}:
             # Handle response completion
+            logger.info(f"[azure] Response completed - audio={self._receiving_audio}, text_buffer_len={len(self._response_buffer)}, audio_buffer_len={len(self._audio_buffer) if hasattr(self, '_audio_buffer') else 0}")
+            
             if self._receiving_audio and not self._response_sent:
                 # Send complete audio message to frontend
                 if self._audio_buffer:
@@ -368,10 +431,10 @@ class AzureRealtimeBridge:
                     full = "".join(self._response_buffer)
                     logger.info(f"[azure] Processing text from audio response for form markers: {full[:100]}...")
                     await self._process_form_markers_only(full)
-                elif not self._response_buffer:
-                    # If no text buffer but we got audio, there might be markers in the audio transcript
-                    # Let's check if we need to process the response differently
+                else:
                     logger.warning("[azure] Audio response completed but no text buffer for form processing")
+                    # The audio response should have included text markers, but didn't
+                    # This indicates the model may not be following instructions properly
                 
                 self._receiving_audio = False
                 self._audio_buffer.clear()
@@ -396,7 +459,13 @@ class AzureRealtimeBridge:
             logger.error("[azure] Error event: %s", err_msg)
             await self._emit_frontend({"type": "error", "error": err_msg})
         else:
-            logger.debug("[azure] Ignored event type: %s", etype)
+            # Log all ignored events to see if we're missing text content in other event types
+            event_str = json.dumps(event, ensure_ascii=False)
+            logger.info(f"[azure] Ignored event type: {etype} - full event: {event_str}")
+            
+            # Check if this event contains any text content we might be missing
+            if "text" in event_str.lower() or "content" in event_str.lower():
+                logger.warning(f"[azure] Potentially missed text content in {etype}: {event_str}")
         return
 
     def _calculate_response_duration(self) -> Optional[float]:
@@ -859,7 +928,7 @@ class AzureRealtimeBridge:
             }
             await self.ws.send(json.dumps(create_item))  # type: ignore
 
-            # 2. Request a response matching input modality
+            # 2. Request a response matching input modality (always include text for form markers)
             response_modalities = ["text"] if not self._last_input_was_audio else ["text", "audio"]
             response_req = {
                 "type": "response.create",
@@ -908,7 +977,7 @@ class AzureRealtimeBridge:
             }
             await self.ws.send(json.dumps(commit_event))
             
-            # Create a response with audio modality since input was audio
+            # Create a response with both modalities - text is required for form markers
             response_req = {
                 "type": "response.create",
                 "response": {

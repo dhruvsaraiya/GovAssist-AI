@@ -15,16 +15,23 @@ export const MessageBubble: React.FC<Props> = ({ message }) => {
   const [sound, setSound] = useState<Audio.Sound | null>(null);
 
   const handlePlayAudio = useCallback(async () => {
-    if (!message.mediaUri || message.type !== 'audio') return;
+    console.log('[MessageBubble] Play audio - type:', message.type, 'mediaUri:', message.mediaUri);
+    
+    if (!message.mediaUri || message.type !== 'audio') {
+      console.warn('[MessageBubble] No media URI or not audio type');
+      return;
+    }
 
     try {
       if (isPlaying && sound) {
         // Stop current playback
+        console.log('[MessageBubble] Stopping current playback');
         await sound.stopAsync();
         setIsPlaying(false);
         return;
       }
 
+      console.log('[MessageBubble] Creating audio sound from URI:', message.mediaUri);
       // Create and play audio
       const { sound: audioSound } = await Audio.Sound.createAsync(
         { uri: message.mediaUri },
@@ -33,10 +40,12 @@ export const MessageBubble: React.FC<Props> = ({ message }) => {
       
       setSound(audioSound);
       setIsPlaying(true);
+      console.log('[MessageBubble] Audio playing started');
 
       // Set up completion handler
       audioSound.setOnPlaybackStatusUpdate((status) => {
         if (status.isLoaded && status.didJustFinish) {
+          console.log('[MessageBubble] Audio playback finished');
           setIsPlaying(false);
           audioSound.unloadAsync();
           setSound(null);
@@ -44,11 +53,11 @@ export const MessageBubble: React.FC<Props> = ({ message }) => {
       });
 
     } catch (error) {
-      console.warn('Error playing audio:', error);
+      console.warn('[MessageBubble] Error playing audio:', error);
       Toast.show({
         type: 'error',
         text1: 'Error',
-        text2: 'Failed to play audio message',
+        text2: 'Failed to play audio message: ' + String(error),
         visibilityTime: 3000,
       });
       setIsPlaying(false);
@@ -92,7 +101,7 @@ export const MessageBubble: React.FC<Props> = ({ message }) => {
                 color={isUser ? '#ffffff' : '#2563eb'} 
               />
               <Text style={[styles.audioText, isUser ? styles.userText : styles.assistantText]}>
-                {isPlaying ? 'Playing...' : 'Audio message'}
+                {isPlaying ? 'Playing...' : `Audio message ${message.mediaUri ? '🎵' : '(no audio)'}`}
               </Text>
             </TouchableOpacity>
           )}

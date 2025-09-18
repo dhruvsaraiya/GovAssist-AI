@@ -15,6 +15,45 @@ import aadhaarMapping from '../forms/mappings/formAadhaar.json';
 import incomeMapping from '../forms/mappings/formIncome.json';
 import { createChatWebSocket, ChatWebSocket } from '../services/ws';
 
+// Helper function to create WAV blob from PCM16 data
+const createWavBlob = (pcmData: Uint8Array, sampleRate: number, channels: number, bitsPerSample: number): Blob => {
+  const length = pcmData.length;
+  const buffer = new ArrayBuffer(44 + length);
+  const view = new DataView(buffer);
+  
+  // WAV header
+  const writeString = (offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+  
+  // RIFF chunk descriptor
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + length, true);
+  writeString(8, 'WAVE');
+  
+  // fmt sub-chunk
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * channels * bitsPerSample / 8, true);
+  view.setUint16(32, channels * bitsPerSample / 8, true);
+  view.setUint16(34, bitsPerSample, true);
+  
+  // data sub-chunk
+  writeString(36, 'data');
+  view.setUint32(40, length, true);
+  
+  // PCM data
+  const dataView = new Uint8Array(buffer, 44);
+  dataView.set(pcmData);
+  
+  return new Blob([buffer], { type: 'audio/wav' });
+};
+
 export const ChatScreen: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([{
     id: 'welcome', role: 'assistant', content: 'Hi! How can I assist you with government forms today?', createdAt: Date.now(), type: 'text'
@@ -120,15 +159,18 @@ export const ChatScreen: React.FC = () => {
           
           // Store audio data if this is an audio message
           if (m.type === 'audio' && m.audio_data) {
-            // Convert base64 audio to blob URL for playback
+            // Convert base64 PCM16 audio to blob URL for playback
             try {
+              // Decode base64 audio data (PCM16 format)
               const binaryString = atob(m.audio_data);
               const bytes = new Uint8Array(binaryString.length);
               for (let i = 0; i < binaryString.length; i++) {
                 bytes[i] = binaryString.charCodeAt(i);
               }
-              const blob = new Blob([bytes], { type: 'audio/wav' });
-              msg.mediaUri = URL.createObjectURL(blob);
+              
+              // Create WAV file blob from PCM16 data
+              const wavBlob = createWavBlob(bytes, 16000, 1, 16);
+              msg.mediaUri = URL.createObjectURL(wavBlob);
             } catch (e) {
               console.warn('Failed to create audio blob:', e);
             }
@@ -136,6 +178,10 @@ export const ChatScreen: React.FC = () => {
           
           return [...prev, msg];
         });
+      },
+      onAssistantAudio: (audioData) => {
+        // Handle separate audio events if needed
+        console.log('[audio] Received assistant audio data');
       },
       onFormOpen: (url) => {
         setActiveFormUrl(url);
@@ -257,12 +303,18 @@ export const ChatScreen: React.FC = () => {
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [isStreamingAudio, setIsStreamingAudio] = useState(false);
   const recordingIntervalRef = useRef<any>(null);
+  const recordingStartTime = useRef<number | null>(null);
 
   // Audio streaming functionality
   const startAudioStreaming = useCallback(async () => {
+    console.log('[audio] Starting audio recording...');
     try {
       const perm = await Audio.requestPermissionsAsync();
-      if (!perm.granted) { Alert.alert('Permission required', 'Microphone permission is needed'); return; }
+      if (!perm.granted) { 
+        Alert.alert('Permission required', 'Microphone permission is needed'); 
+        return; 
+      }
+      console.log('[audio] Permissions granted');
       
       await Audio.setAudioModeAsync({ 
         allowsRecordingIOS: true, 
@@ -270,65 +322,220 @@ export const ChatScreen: React.FC = () => {
         shouldDuckAndroid: true,
         playThroughEarpieceAndroid: false,
       });
+      console.log('[audio] Audio mode set');
 
-      // Create recording with high quality settings
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
+      // Detect supported MIME type for web platform
+      let webMimeType = 'audio/webm;codecs=opus';
+      if (Platform.OS === 'web' && typeof MediaRecorder !== 'undefined') {
+        const supportedTypes = [
+          'audio/webm;codecs=opus',
+          'audio/webm',
+          'audio/ogg;codecs=opus',
+          'audio/mp4'
+        ];
+        
+        for (const type of supportedTypes) {
+          if (MediaRecorder.isTypeSupported(type)) {
+            webMimeType = type;
+            console.log('[audio] Using supported web format:', type);
+            break;
+          }
+        }
+      }
 
+      // Create recording options with all required platforms
+      const recordingOptions = {
+        android: {
+          extension: '.wav',
+          outputFormat: Audio.AndroidOutputFormat.DEFAULT,
+          audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 256000,
+        },
+        ios: {
+          extension: '.wav',
+          outputFormat: Audio.IOSOutputFormat.LINEARPCM,
+          audioQuality: Audio.IOSAudioQuality.HIGH,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 256000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+        },
+        web: {
+          mimeType: webMimeType,
+          bitsPerSecond: 256000,
+        },
+      };
+
+      console.log('[audio] Creating recording with options:', recordingOptions);
+      let recording;
+      try {
+        const result = await Audio.Recording.createAsync(recordingOptions);
+        recording = result.recording;
+        console.log('[audio] Recording created successfully with custom options');
+      } catch (customError) {
+        console.warn('[audio] Custom recording options failed, trying preset:', customError);
+        // Fallback to high quality preset if custom options fail
+        const result = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+        recording = result.recording;
+        console.log('[audio] Recording created successfully with preset');
+      }
+      
       setRecording(recording);
       setIsStreamingAudio(true);
+      recordingStartTime.current = Date.now();
+      console.log('[audio] State updated - recording started');
 
-      // Note: For production audio streaming, you'd typically use a more sophisticated
-      // approach to capture audio chunks in real-time rather than periodically
-      // reading the entire recording file. This is a simplified implementation.
+      // For React Native with Expo, real-time chunk streaming is complex.
+      // Instead, we'll use a simpler approach: start recording and commit on stop.
+      // This provides good UX while working with the existing Azure Realtime API expectations.
 
     } catch (e) {
-      Alert.alert('Error', 'Could not start audio streaming');
+      console.error('[audio] Error starting recording:', e);
+      Alert.alert('Error', 'Could not start audio streaming: ' + String(e));
       setIsStreamingAudio(false);
     }
   }, [wsState]);
 
   const stopAudioStreaming = useCallback(async () => {
+    console.log('[audio] Stopping audio recording...');
     if (recordingIntervalRef.current) {
       clearInterval(recordingIntervalRef.current);
       recordingIntervalRef.current = null;
     }
 
-    if (!recording) return;
+    if (!recording) {
+      console.log('[audio] No recording to stop');
+      return;
+    }
     
     try {
+      console.log('[audio] Stopping and unloading recording...');
       await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      console.log('[audio] Recording stopped, URI:', uri);
       
-      // Commit the final audio input
-      if (wsRef.current && wsState === 'open') {
-        wsRef.current.commitAudioInput();
+      // Check minimum recording duration (at least 500ms)
+      const recordingDuration = recordingStartTime.current ? Date.now() - recordingStartTime.current : 0;
+      console.log('[audio] Recording duration:', recordingDuration, 'ms');
+      
+      if (recordingDuration < 500) {
+        Alert.alert('Recording Too Short', 'Please record for at least half a second');
+        return;
       }
       
-      // Add a user message indicating audio was sent
-      setMessages(prev => [...prev, { 
-        id: 'user-audio-' + Date.now(), 
-        role: 'user', 
-        content: '[Audio message]', 
-        createdAt: Date.now(), 
-        type: 'text' 
-      }]);
+      if (uri && wsRef.current && wsState === 'open') {
+        console.log('[audio] Reading audio file from URI:', uri);
+        
+        let audioData: string;
+        
+        if (Platform.OS === 'web') {
+          // For web, convert the blob URI to base64
+          try {
+            const response = await fetch(uri);
+            const blob = await response.blob();
+            console.log('[audio] Blob size:', blob.size, 'type:', blob.type);
+            
+            if (blob.size === 0) {
+              throw new Error('Audio blob is empty');
+            }
+            
+            // Convert blob to base64
+            const reader = new FileReader();
+            audioData = await new Promise<string>((resolve, reject) => {
+              reader.onload = () => {
+                const result = reader.result as string;
+                const base64 = result.split(',')[1]; // Remove data:audio/webm;base64, prefix
+                if (!base64 || base64.length === 0) {
+                  reject(new Error('Failed to convert blob to base64'));
+                  return;
+                }
+                resolve(base64);
+              };
+              reader.onerror = () => reject(new Error('FileReader error'));
+              reader.readAsDataURL(blob);
+            });
+          } catch (e) {
+            console.error('[audio] Failed to read web audio file:', e);
+            Alert.alert('Audio Error', 'Failed to process recorded audio: ' + String(e));
+            return;
+          }
+        } else {
+          // For mobile platforms, use FileSystem
+          try {
+            audioData = await FileSystem.readAsStringAsync(uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+          } catch (e) {
+            console.error('[audio] Failed to read mobile audio file:', e);
+            Alert.alert('Audio Error', 'Failed to read recorded audio file');
+            return;
+          }
+        }
+        
+        console.log('[audio] Audio data length:', audioData.length);
+        console.log('[audio] Platform:', Platform.OS);
+        
+        if (audioData.length === 0) {
+          console.error('[audio] Audio data is empty');
+          Alert.alert('Audio Error', 'Recorded audio is empty. Please try recording again.');
+          return;
+        }
+        
+        // Note: For web, the audio might be in WebM/Opus format instead of PCM16
+        // The backend Azure Realtime API should handle format conversion
+        
+        // Send the complete audio as a chunk and commit
+        console.log('[audio] Sending audio chunk and committing...');
+        wsRef.current.sendAudioChunk(audioData);
+        wsRef.current.commitAudioInput();
+        
+        // Add a user message indicating audio was sent (only after successful processing)
+        setMessages(prev => [...prev, { 
+          id: 'user-audio-' + Date.now(), 
+          role: 'user', 
+          content: '[Audio message]', 
+          createdAt: Date.now(), 
+          type: 'audio',
+          mediaUri: Platform.OS === 'web' ? uri : undefined // Keep the blob URL for playback on web
+        }]);
+        console.log('[audio] Audio message added to chat');
+      } else if (!uri) {
+        console.error('[audio] No URI received from recording');
+        Alert.alert('Audio Error', 'Failed to get recording URI');
+      }
       
     } catch (e) {
-      Alert.alert('Error', 'Could not stop audio streaming');
+      console.error('[audio] Error stopping recording:', e);
+      Alert.alert('Error', 'Could not stop audio streaming: ' + String(e));
     } finally {
       setRecording(null);
       setIsStreamingAudio(false);
+      recordingStartTime.current = null;
+      console.log('[audio] Recording state cleared');
     }
   }, [recording, wsState]);
 
   const toggleRecording = useCallback(() => {
+    console.log('[audio] Toggle recording - current state:', isStreamingAudio);
+    console.log('[audio] WebSocket state:', wsState);
+    
+    if (wsState !== 'open') {
+      Alert.alert('Connection Error', 'WebSocket is not connected. Please wait for connection.');
+      return;
+    }
+    
     if (isStreamingAudio) {
+      console.log('[audio] Stopping recording...');
       stopAudioStreaming();
     } else {
+      console.log('[audio] Starting recording...');
       startAudioStreaming();
     }
-  }, [isStreamingAudio, startAudioStreaming, stopAudioStreaming]);
+  }, [isStreamingAudio, startAudioStreaming, stopAudioStreaming, wsState]);
 
   // (Deprecated) formHeight logic removed – top shutter overlay handles sizing.
 
@@ -366,8 +573,25 @@ export const ChatScreen: React.FC = () => {
         <TouchableOpacity style={styles.iconBtn} onPress={pickImage}>
           <Ionicons name="image-outline" size={22} color="#374151" />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.iconBtn} onPress={toggleRecording}>
-          <Ionicons name={isStreamingAudio ? 'stop-circle-outline' : 'mic-outline'} size={22} color={isStreamingAudio ? '#dc2626' : '#374151'} />
+        <TouchableOpacity 
+          style={[
+            styles.iconBtn, 
+            isStreamingAudio && styles.recordingBtn,
+            wsState !== 'open' && styles.disabledBtn
+          ]} 
+          onPress={toggleRecording}
+          disabled={wsState !== 'open'}
+        >
+          <Ionicons 
+            name={isStreamingAudio ? 'stop-circle' : 'mic-outline'} 
+            size={24} 
+            color={isStreamingAudio ? '#ffffff' : '#374151'} 
+          />
+          {isStreamingAudio && (
+            <View style={styles.recordingIndicator}>
+              <Text style={styles.recordingText}>REC</Text>
+            </View>
+          )}
         </TouchableOpacity>
 
         <TextInput
@@ -394,5 +618,33 @@ const styles = StyleSheet.create({
   inputRow: { flexDirection: 'row', padding: 8, alignItems: 'center', borderTopWidth: 1, borderColor: '#e5e7eb', backgroundColor: '#f9fafb' },
   textInput: { flex: 1, backgroundColor: '#fff', borderWidth: 1, borderColor: '#d1d5db', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, marginHorizontal: 6 },
   sendBtn: { backgroundColor: '#2563eb', borderRadius: 20, padding: 10 },
-  iconBtn: { padding: 6 }
+  iconBtn: { padding: 6 },
+  recordingBtn: { 
+    backgroundColor: '#dc2626', 
+    borderRadius: 20, 
+    padding: 6,
+    shadowColor: '#dc2626',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 4,
+    position: 'relative'
+  },
+  recordingIndicator: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    backgroundColor: '#ef4444',
+    borderRadius: 8,
+    paddingHorizontal: 4,
+    paddingVertical: 1
+  },
+  recordingText: {
+    color: '#ffffff',
+    fontSize: 8,
+    fontWeight: 'bold'
+  },
+  disabledBtn: {
+    opacity: 0.5
+  }
 });
