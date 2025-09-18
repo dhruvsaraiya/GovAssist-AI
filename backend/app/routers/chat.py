@@ -6,7 +6,14 @@ Provides a minimal streaming bridge:
 Flow (happy path):
 1. Client connects to /api/chat/ws
 2. Backend opens (or lazily opens) a websocket to Azure Realtime
-3. On connect: send system instructions once (conversation.item.create role=system)
+3. On connect: send system instructions once (conversat        elif etype == "response.output_text.delta":
+            delta = event.get("delta", "")
+            if delta:
+                # Always buffer text for form marker processing
+                self._response_buffer.append(delta)
+                # Only emit text deltas if we're not receiving audio
+                if not self._receiving_audio:
+                    await self._emit_frontend({"type": "assistant_delta", "delta": delta})tem.create role=system)
 4. For each user message: create conversation item + request response
 5. Stream response.output_text.delta events to client as assistant_delta
 6. When response completes, send consolidated assistant_message
@@ -36,136 +43,124 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 system_prompt = """
 You are a government services assistant that helps users access official forms and fill them step by step.
 
-FORM ACTIVATION:
-When users ask for ANY form or mention these keywords, you MUST end your response with the specified marker:
+RESPONSE MODALITY AND LANGUAGE MATCHING:
+- ALWAYS respond in the SAME LANGUAGE as the user's input (English → English, Hindi → Hindi, etc.)
+- ALWAYS match the user's input modality: Audio input → Audio response, Text input → Text response
+- Provide natural, conversational responses that feel human and supportive
 
-AADHAAR REQUESTS (keywords: aadhaar, aadhar, identity card, id update, demographic update, address change):
-- Always end response with: ##FORM:aadhaar##
+FORM Operations:
+1. FORM ACTIVATION - When users request forms, end response with appropriate marker:
+   - AADHAAR requests (keywords: aadhaar, aadhar, identity card, id update, demographic update, address change) → ##FORM:aadhaar##
+   - MUDRA/INCOME requests (keywords: mudra loan, business loan, income certificate, PMMY, financial assistance, loan application) → ##FORM:income##
 
-MUDRA/INCOME REQUESTS (keywords: mudra loan, business loan, income certificate, PMMY, financial assistance, loan application):  
-- Always end response with: ##FORM:income##
+2. FORM FIELD REQUESTS - When you receive "Ask the user: [field prompt]":
+   - Present the field request naturally and conversationally
+   - Explain options clearly if provided
+   - Be encouraging and supportive
+   - Ask ONLY for the requested field - don't add extra questions
 
-FORM FILLING MODE:
-When you receive a system message starting with "Ask the user:", you should:
-1. Present ONLY the field request that was provided - do not add extra questions, in a natural conversational way
-2. If the request includes field descriptions, present them clearly
-3. If options are provided, explain them helpfully
-4. Be encouraging and supportive
-5. Do not include any ## markers in your response to users
-6. Do not ask about other form fields or categories - stick to the current field only
+3. USER RESPONSE PROCESSING - During form filling, intelligently categorize user responses:
 
-COMBINED ACKNOWLEDGMENT AND FIELD REQUEST:
-When you receive a system message that includes both acknowledgment and field request:
-1. First, briefly acknowledge the previous answer positively (1-2 sentences max)
-2. Then, present the next field request naturally
-3. Do NOT ask multiple questions or provide extra commentary
-4. Keep the response focused and concise
+   A) CLARIFICATION QUESTIONS - User is asking about the field:
+      Examples: "What does this mean?", "I don't understand", "Can you explain this field?", "What should I put here?"
+      Response: Answer their question helpfully, then ask for the field value again
+      End with: ##QUESTION_ANSWERED##
 
-PROCESSING USER RESPONSES DURING FORM FILLING:
-When a user provides ANY response while you're expecting a form field answer, you must INTELLIGENTLY determine if they are:
+   B) FIELD ANSWERS - User is providing a value (even conversationally):
+      Examples: "dhruv enterprise", "my name is john smith", "it would be mumbai", "that's 25000", "ohh that is 123"
+      Response: Provide positive acknowledgment in same language
+      End with: ##FORM_VALUE:extracted_value##
 
-A) ASKING A QUESTION about the field:
-   - Answer their question helpfully
-   - Re-explain the field if needed
-   - Ask them to provide the field value again
-   - END your response with ##QUESTION_ANSWERED## marker
-   - This keeps the system waiting for the actual field answer
-
-B) PROVIDING AN ANSWER (even conversationally):
-   - Extract the actual value from their response
-   - Provide a conversational acknowledgment
-   - END your response with ##FORM_VALUE:extracted_value##
-   - Be aggressive in value extraction - don't ask for clarification if the value is clear
-
-Examples of QUESTIONS (use ##QUESTION_ANSWERED##):
-- "What does this mean?"
-- "I don't understand this field"
-- "Can you explain what Application Sl. No. is?"
-- "I'm not sure about this"
-- "What should I put here?"
-
-Examples of ANSWERS (use ##FORM_VALUE:##):
-- "ohh that is 123" → "Perfect! ##FORM_VALUE:123##"
-- "my name is john smith" → "Thank you! ##FORM_VALUE:john smith##"  
-- "it would be mumbai" → "Great! ##FORM_VALUE:mumbai##"
-- "that's 25000" → "Got it! ##FORM_VALUE:25000##"
-- "I am not sure" followed by "ohh that is 123" → "Perfect! ##FORM_VALUE:123##"
-
-HANDLING USER QUESTIONS DURING FORM FILLING:
-When a user asks a question about a form field:
-1. Answer their question clearly and helpfully using any field descriptions provided
-2. Then ask them to provide the field value or let them know they can skip if it's optional
-3. ALWAYS end your response with ##QUESTION_ANSWERED## marker
-4. This tells the system to keep waiting for the actual field answer
-
-FIELD ANSWER PROCESSING:
-When you receive a ##FIELD_ANSWER## marker in a system message:
-1. Briefly acknowledge the user's answer positively
-2. If the answer was validated successfully, show appreciation
-3. If there were validation issues, be encouraging and offer gentle guidance
-4. Wait for the next field request
-
-EXTRACTING VALUES FROM CONVERSATIONAL RESPONSES:
-When users provide answers in conversational form, you MUST extract the actual value and provide it using ##FORM_VALUE:##. Examples:
-- User says "ohh that is 123" → Extract "123" and respond: "Perfect! ##FORM_VALUE:123##"
-- User says "my enterprise name is dhruv ltd." → Extract "dhruv ltd." and respond: "Got it! ##FORM_VALUE:dhruv ltd.##"
-- User says "it's john smith" → Extract "john smith" and respond: "Thank you! ##FORM_VALUE:john smith##"
-- User says "that would be 25000" → Extract "25000" and respond: "Great! ##FORM_VALUE:25000##"
-- User says "yes it is mumbai" → Extract "mumbai" and respond: "Perfect! ##FORM_VALUE:mumbai##"
+   C) CONFIRMATIONS - User confirms a suggestion:
+      Examples: "Yes", "Yeah", "Correct", "That's right", "हाँ", "सही है"
+      Response: Acknowledge confirmation positively
+      End with: ##FORM_VALUE:confirmed_value##
 
 CRITICAL VALUE EXTRACTION RULES:
-1. ALWAYS listen for the actual information the user is providing, regardless of how they phrase it
-2. Extract ONLY the relevant value (numbers, names, addresses, etc.) - ignore filler words like "ohh", "that is", "it's", "my", "the", etc.
-3. For names and text fields: preserve proper capitalization and spacing
-4. For numbers: extract only the numeric value
-5. For select/dropdown fields: map to the exact valid option after extraction
-6. ALWAYS use ##FORM_VALUE:extracted_value## when you identify a field value in the user's response
+- Extract the core information regardless of conversational phrasing
+- Remove filler words: "ohh", "that is", "it's", "my", "the", etc.
+- Preserve proper names, addresses, and important details exactly
+- For numbers: extract clean numeric values
+- For select fields: map user's natural language to exact valid options
+- Be aggressive in extraction - don't ask for clarification unless truly ambiguous
 
-USER INPUT INTERPRETATION FOR SELECT FIELDS:
-When asking for select/dropdown fields, you should:
-1. If user provides partial or similar input (e.g., "small" for "Shishu"), interpret their intent and provide the correct value
-2. Always confirm your interpretation: "I understand you mean [correct option]. Let me fill that in for you."
-3. Be helpful in mapping user's natural language to exact form values
-4. After mapping, use ##FORM_VALUE:exact_option## with the precise valid option
+CLEAR EXAMPLES FOR ALL CASES:
 
-HANDLING VALIDATION ERRORS:
-When you receive a validation error message:
-1. Don't just repeat the error - interpret what the user likely meant
-2. Suggest the closest matching option and ask for confirmation
-3. Example: "I think you meant '[correct option]' - shall I fill that in?"
+1. FORM RESPONSE (when user requests a form):
+   User: "I need an aadhaar card update"
+   Response: "I'll help you with your Aadhaar update. Let me open the form for you. ##FORM:aadhaar##"
 
-HANDLING CONFIRMATIONS:
-When user confirms with "Yes", "Yeah", "Correct", "That's right", etc.:
-1. Provide a conversational response acknowledging the confirmation
-2. Then provide the exact form value using the special marker: ##FORM_VALUE:exact_value##
-3. Example: "Perfect! Let me fill that in for you. ##FORM_VALUE:exact_value##"
+2. FORM VALUE RESPONSE (when user provides field data):
+   User: "dhruv enterprise"
+   Response: "Perfect! ##FORM_VALUE:dhruv enterprise##"
+   
+   User: "my name is john smith"
+   Response: "Thank you! ##FORM_VALUE:john smith##"
+   
+   User: "it would be mumbai"
+   Response: "Great! ##FORM_VALUE:mumbai##"
 
-PROVIDING FORM VALUES:
-When you need to provide a form field value (after confirmation or direct interpretation):
-1. Always include the ##FORM_VALUE:value## marker at the end of your response
-2. The value must be exactly one of the valid options for select fields, or the clean extracted value for text fields
-3. Example responses:
-   - "I understand you mean the medium category. ##FORM_VALUE:exact_value##"
-   - "Got it! ##FORM_VALUE:exact_value##"
+3. QUESTION ANSWERED RESPONSE (when user asks for clarification):
+   User: "What does Application Sl. No. mean?"
+   Response: "Application Serial Number is a unique identifier for your application. It's usually provided when you first apply. Could you please provide your Application Sl. No.? ##QUESTION_ANSWERED##"
 
-RESPONSE GUIDELINES:
-- Be conversational, friendly, and professional
-- Explain technical terms or requirements clearly
-- For dropdown/select fields, present options in an easy-to-read format
-- Provide context about why certain information is needed
-- Reassure users about data privacy and security when appropriate
-- Use encouraging language like "Great!", "Perfect!", "Thank you!"
-- Interpret user intent and map natural language to form values
+4. CONFIRMATION HANDLING:
+   System suggests: "I think you meant 'Shishu' category. Shall I fill that in?"
+   User: "Yes"
+   Response: "Perfect! Let me fill that in for you. ##FORM_VALUE:Shishu##"
 
-CRITICAL: 
-- NEVER include ##FIELD_REQUEST##, ##FIELD_ANSWER##, or other internal ## markers in responses to users
-- EXCEPTIONS: You MAY use these special markers:
-  - ##FORM_VALUE:value## to provide form field values
-  - ##QUESTION_ANSWERED## to indicate you answered a user's question (keeps awaiting field answer)
-- These markers help the system process responses correctly
-- Always be conversational and helpful
-- Ask only one field at a time when in form filling mode
-"""
+AMBIGUOUS AND FUZZY RESPONSE HANDLING:
+
+1. **PARTIAL OR UNCLEAR RESPONSES**:
+   - When user provides incomplete information, ask for clarification
+   - Example: User says "john" for full name → "I have 'john' - could you provide your complete name? ##QUESTION_ANSWERED##"
+   - Example: User says "maybe" or "I think" → "I need a specific value. Could you please provide [field name]? ##QUESTION_ANSWERED##"
+
+2. **FUZZY DROPDOWN MATCHING**:
+   - For select/dropdown fields, intelligently match partial or similar inputs to valid options
+   - Look for closest matches in meaning, spelling, or common synonyms
+   - Consider language variations (English, Hindi, regional terms)
+   - When confident in the match, confirm and provide the exact value
+   - Example: User says "small" for a size field → "I understand you mean the small option. ##FORM_VALUE:[exact_small_option]##"
+
+3. **VALIDATION ERROR RECOVERY**:
+   - When validation fails, analyze what the user likely meant
+   - Suggest the closest matching valid option from the available choices
+   - Provide context about why you're suggesting that option
+   - Ask for confirmation rather than starting over
+   - Example: "I think you meant '[suggested_option]' from the available choices. Shall I fill that in? ##QUESTION_ANSWERED##"
+
+4. **SMART INTERPRETATION STRATEGIES**:
+   - Use context clues from the user's full response
+   - Consider common abbreviations and variations
+   - Handle typos and speech recognition errors
+   - Map colloquial terms to formal options
+   - Support multiple languages and transliterations
+
+CONVERSATIONAL STYLE SUPPORT:
+- Accept all conversational responses: "uhh that would be...", "I think it's...", "probably..."
+- Extract the actual value from natural speech patterns
+- Handle hesitations, corrections, and informal language
+- Support multiple languages while maintaining the same extraction logic
+
+SYSTEM MARKERS (processed by backend, invisible to users):
+- ##FORM:form_name## - Opens specified form
+- ##FORM_VALUE:extracted_value## - Submits field value
+- ##QUESTION_ANSWERED## - Keeps system waiting for field answer after answering user question
+
+RESPONSE QUALITY:
+- Be warm, professional, and encouraging
+- Use positive language: "Great!", "Perfect!", "Thank you!"
+- Match user's energy and communication style
+- Provide context when helpful
+- Never show ## markers to users - they're processed by the system
+
+CRITICAL SUCCESS FACTORS:
+1. Always extract values aggressively from conversational responses
+2. Distinguish clearly between questions and answers
+3. Handle confirmations properly
+4. Maintain language and modality consistency
+5. Keep user experience natural and flowing"""
 
 class AzureRealtimeBridge:
     """Manage a single Azure Realtime websocket connection and simple send helpers."""
@@ -187,6 +182,9 @@ class AzureRealtimeBridge:
         self._awaiting_field_answer = False
         self._ai_responding = False
         self._pending_requests = []
+        self._receiving_audio = False
+        self._last_input_was_audio = False
+        self._audio_buffer: list[str] = []
 
         logger.info("AzureRealtimeBridge initialized (deployment=%s, api_version=%s, user_id=%s)",
                    self.settings.azure_openai_deployment_name, self.settings.openai_api_version, user_id)
@@ -247,11 +245,24 @@ class AzureRealtimeBridge:
 
         logger.info("[azure] Connected (%.2f ms)", (time.perf_counter() - connect_started) * 1000)
 
-        # Configure session (minimal)
+        # Configure session for text and audio
         session_cfg = {
             "type": "session.update",
             "session": {
-                "modalities": ["text"],
+                "modalities": ["text", "audio"],
+                "instructions": system_prompt,
+                "voice": "alloy",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "input_audio_transcription": {
+                    "model": "whisper-1"
+                },
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.5,
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 500
+                },
                 "tool_choice": "none",
             },
         }
@@ -299,35 +310,86 @@ class AzureRealtimeBridge:
             self._current_response_id = response_id
             self._response_sent = False
             self._ai_responding = True
+            self._receiving_audio = False  # Reset audio flag for new response
 
         if etype == "response.output_text.delta":
             delta = event.get("delta", "")
             if delta:
                 self._response_buffer.append(delta)
-                await self._emit_frontend({"type": "assistant_delta", "delta": delta})
+                # Only send text deltas to frontend if we're not also receiving audio
+                # For audio responses, we process text for form markers but don't show it in UI
+                if not self._receiving_audio:
+                    await self._emit_frontend({"type": "assistant_delta", "delta": delta})
+                else:
+                    logger.debug(f"[azure] Text delta for audio response (form processing only): {delta}")
+
+        elif etype == "response.audio.delta":
+            # Collect audio data for complete audio message
+            audio_data = event.get("delta", "")
+            if audio_data:
+                # Mark that we're receiving audio for this response
+                if not self._receiving_audio:
+                    self._receiving_audio = True
+                    self._audio_buffer = []
+                    logger.info("[azure] Started receiving audio response")
+                
+                # Buffer audio data instead of streaming
+                self._audio_buffer.append(audio_data)
+
+        # Remove audio transcript handling - we stream audio directly
+        # The text processing will handle form markers from text responses
+
+        elif etype == "conversation.item.input_audio_transcription.completed":
+            # Handle completed transcription of user audio input
+            transcript = event.get("transcript", "")
+            if transcript:
+                await self._emit_frontend({
+                    "type": "user_audio_transcript",
+                    "transcript": transcript
+                })
 
         elif etype == "response.output_item.done" and not self._response_sent:
+            # Only process text output if we haven't sent a response yet
             text = self._extract_text_from_output_item(event.get("item", {}))
             if text:
                 message_id = event.get("item", {}).get("id")
                 await self._send_assistant_message(text, message_id, "output_item")
 
-        elif etype == "response.content_part.done" and not self._response_sent:
-            text = self._extract_text_from_content_part(event.get("part", {}))
-            if text:
-                await self._send_assistant_message(text, event_type="content_part_fallback")
-
-        elif etype in {"response.output_text.done", "response.completed", "response.done"} and not self._response_sent:
-            if self._response_buffer:
-                full = "".join(self._response_buffer)
-                self._response_buffer.clear()
-                await self._send_assistant_message(full, event_type="buffered_fallback")
+        elif etype in {"response.completed", "response.done"}:
+            # Handle response completion
+            if self._receiving_audio and not self._response_sent:
+                # Send complete audio message to frontend
+                if self._audio_buffer:
+                    complete_audio = "".join(self._audio_buffer)
+                    await self._send_audio_message(complete_audio)
+                
+                # IMPORTANT: Also process any buffered text for form markers
+                if self._response_buffer:
+                    full = "".join(self._response_buffer)
+                    logger.info(f"[azure] Processing text from audio response for form markers: {full[:100]}...")
+                    await self._process_form_markers_only(full)
+                elif not self._response_buffer:
+                    # If no text buffer but we got audio, there might be markers in the audio transcript
+                    # Let's check if we need to process the response differently
+                    logger.warning("[azure] Audio response completed but no text buffer for form processing")
+                
+                self._receiving_audio = False
+                self._audio_buffer.clear()
+                self._response_sent = True
+            elif not self._response_sent:
+                # Text-only response - send buffered text if available
+                if self._response_buffer:
+                    full = "".join(self._response_buffer)
+                    await self._send_assistant_message(full, event_type="buffered_fallback")
+                else:
+                    logger.warning("[azure] Response completed but no text buffer available")
+            
+            # Clear buffer and reset state
+            self._response_buffer.clear()
             
             # Mark AI as no longer responding and process any pending requests
-            # Only do this if no message was sent (avoid double processing)
-            if not self._response_sent:
-                self._ai_responding = False
-                await self._process_pending_requests()
+            self._ai_responding = False
+            await self._process_pending_requests()
 
         elif etype == "error":
             err_msg = event.get("error", {}).get("message", "unknown_error")
@@ -461,6 +523,68 @@ class AzureRealtimeBridge:
         
         # Process any pending requests
         await self._process_pending_requests()
+
+    async def _send_audio_message(self, audio_data: str, message_id: Optional[str] = None):
+        """Send a complete audio message to frontend"""
+        duration_ms = self._calculate_response_duration()
+        if duration_ms:
+            logger.info("[azure] Audio response completed in %.2f ms", duration_ms)
+        else:
+            logger.info("[azure] Audio response completed")
+
+        message_payload = {
+            "type": "assistant_message",
+            "message": {
+                "id": message_id or str(uuid.uuid4()),
+                "role": "assistant",
+                "content": "[Audio message]",  # Placeholder text
+                "type": "audio",
+                "audio_data": audio_data
+            },
+        }
+
+        await self._emit_frontend(message_payload)
+
+    async def _process_form_markers_only(self, text: str):
+        """Process form markers from text without sending a message to frontend"""
+        # Extract form activation marker
+        clean_text, form_name = self._extract_form_from_text(text)
+        
+        # Extract form value marker
+        clean_text, form_value = self._extract_form_value_from_text(clean_text)
+        
+        # Extract question answered marker
+        clean_text, question_answered = self._extract_question_answered_from_text(clean_text)
+        
+        # Handle form activation
+        if form_name:
+            form_url = self._get_form_url(form_name)
+            if form_url:
+                await self._emit_frontend({
+                    "type": "form_open",
+                    "url": f"http://localhost:8000{form_url}"
+                })
+                # Create form session and prepare for field filling
+                session = form_field_manager.create_form_session(self.user_id, form_name)
+                if session and session.current_field:
+                    self._form_session_active = True
+                    self._awaiting_field_answer = True
+                    # Request next field after a short delay
+                    self._pending_requests.append({'type': 'field_request'})
+        
+        # Handle question answered marker
+        if question_answered and self._form_session_active:
+            logger.info(f"[DEBUG] AI answered a user question, keeping form session active")
+            self._awaiting_field_answer = True
+
+        # Handle form value submission
+        if form_value and self._form_session_active:
+            logger.info(f"[DEBUG] AI provided form value: '{form_value}'")
+            success = await self._process_field_answer(form_value)
+            if success:
+                logger.info(f"[DEBUG] AI form value processed successfully")
+            else:
+                logger.info(f"[DEBUG] AI form value processing failed")
 
     async def _emit_frontend(self, payload: dict):
         ws = self._frontend_websocket
@@ -735,16 +859,66 @@ class AzureRealtimeBridge:
             }
             await self.ws.send(json.dumps(create_item))  # type: ignore
 
-            # 2. Request a response (no need to repeat system prompt)
+            # 2. Request a response matching input modality
+            response_modalities = ["text"] if not self._last_input_was_audio else ["text", "audio"]
             response_req = {
                 "type": "response.create",
                 "response": {
-                    "modalities": ["text"],
+                    "modalities": response_modalities,
                     "conversation": "auto",
                 },
             }
             await self.ws.send(json.dumps(response_req))  # type: ignore
             self._ai_responding = True
+            self._last_input_was_audio = False  # Reset for next interaction
+
+    async def send_audio_chunk(self, audio_data: str):
+        """Send audio chunk to Azure Realtime API"""
+        logger.info("[DEBUG] send_audio_chunk called")
+        
+        # Don't send audio while AI is responding
+        if self._ai_responding:
+            logger.warning("[azure] Ignoring audio chunk while AI is responding")
+            return
+            
+        async with self._lock:
+            await self.ensure_connected()
+            if not self.ws:
+                raise RuntimeError("Azure realtime websocket missing after connect")
+            
+            # Send audio chunk
+            audio_event = {
+                "type": "input_audio_buffer.append",
+                "audio": audio_data
+            }
+            await self.ws.send(json.dumps(audio_event))
+
+    async def commit_audio_input(self):
+        """Commit the audio input and request transcription"""
+        logger.info("[DEBUG] commit_audio_input called")
+        
+        async with self._lock:
+            await self.ensure_connected()
+            if not self.ws:
+                raise RuntimeError("Azure realtime websocket missing after connect")
+            
+            # Commit the audio buffer
+            commit_event = {
+                "type": "input_audio_buffer.commit"
+            }
+            await self.ws.send(json.dumps(commit_event))
+            
+            # Create a response with audio modality since input was audio
+            response_req = {
+                "type": "response.create",
+                "response": {
+                    "modalities": ["text", "audio"],
+                    "conversation": "auto",
+                },
+            }
+            await self.ws.send(json.dumps(response_req))
+            self._ai_responding = True
+            self._last_input_was_audio = True  # Mark that input was audio
 
     async def close(self):
         self._closing = True
@@ -805,6 +979,22 @@ async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
                     await bridge.send_user_message(content)
                 except Exception as e:
                     logger.exception("[client %s] Failed sending to Azure realtime", client_id)
+                    await ws.send_text(json.dumps({"type": "error", "error": str(e)}))
+            elif mtype == "audio_chunk":
+                audio_data = msg.get("audio_data", "")
+                if not audio_data:
+                    await ws.send_text(json.dumps({"type": "error", "error": "empty_audio_data"}))
+                    continue
+                try:
+                    await bridge.send_audio_chunk(audio_data)
+                except Exception as e:
+                    logger.exception("[client %s] Failed sending audio chunk to Azure realtime", client_id)
+                    await ws.send_text(json.dumps({"type": "error", "error": str(e)}))
+            elif mtype == "audio_commit":
+                try:
+                    await bridge.commit_audio_input()
+                except Exception as e:
+                    logger.exception("[client %s] Failed committing audio input", client_id)
                     await ws.send_text(json.dumps({"type": "error", "error": str(e)}))
             else:
                 await ws.send_text(json.dumps({"type": "error", "error": "unknown_event"}))

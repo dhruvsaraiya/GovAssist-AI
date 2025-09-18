@@ -73,6 +73,8 @@ export const ChatScreen: React.FC = () => {
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
   };
 
+  // Audio streaming removed - now handled as complete audio messages in MessageBubble
+
   // Initialize websocket once
   useEffect(() => {
     const ws = createChatWebSocket({
@@ -89,13 +91,49 @@ export const ChatScreen: React.FC = () => {
           }
         });
       },
+      // Remove audio delta streaming - we now handle complete audio messages
+      onUserAudioTranscript: (transcript) => {
+        // Update the user's audio message with the transcript for display
+        setMessages(prev => {
+          const updated = [...prev];
+          const lastUserMsg = updated.findLast(m => m.role === 'user' && m.content === '[Audio message]');
+          if (lastUserMsg) {
+            lastUserMsg.content = transcript;
+          }
+          return updated;
+        });
+      },
       onAssistantMessage: (m) => {
         setMessages(prev => {
           // finalize streaming message if exists
           if (streamingMsgRef.current) {
             streamingMsgRef.current = null;
           }
-          const msg: ChatMessage = { id: m.id || 'assistant-' + Date.now(), role: 'assistant', content: m.content, createdAt: Date.now(), type: 'text', formUrl: m.form_url || undefined };
+          const msg: ChatMessage = { 
+            id: m.id || 'assistant-' + Date.now(), 
+            role: 'assistant', 
+            content: m.content, 
+            createdAt: Date.now(), 
+            type: m.type || 'text',
+            formUrl: m.form_url || undefined 
+          };
+          
+          // Store audio data if this is an audio message
+          if (m.type === 'audio' && m.audio_data) {
+            // Convert base64 audio to blob URL for playback
+            try {
+              const binaryString = atob(m.audio_data);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              const blob = new Blob([bytes], { type: 'audio/wav' });
+              msg.mediaUri = URL.createObjectURL(blob);
+            } catch (e) {
+              console.warn('Failed to create audio blob:', e);
+            }
+          }
+          
           return [...prev, msg];
         });
       },
@@ -157,7 +195,13 @@ export const ChatScreen: React.FC = () => {
       debug: false
     });
     wsRef.current = ws;
-    return () => { ws.cleanup(); };
+    return () => { 
+      ws.cleanup(); 
+      // Cleanup audio resources
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+      }
+    };
   }, []);
 
   const sendMessage = useCallback(async () => {
@@ -211,43 +255,80 @@ export const ChatScreen: React.FC = () => {
   }, [loading, appendBackendMessages]);
 
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [isStreamingAudio, setIsStreamingAudio] = useState(false);
+  const recordingIntervalRef = useRef<any>(null);
 
-  const startRecording = useCallback(async () => {
+  // Audio streaming functionality
+  const startAudioStreaming = useCallback(async () => {
     try {
       const perm = await Audio.requestPermissionsAsync();
       if (!perm.granted) { Alert.alert('Permission required', 'Microphone permission is needed'); return; }
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      setRecording(recording);
-    } catch (e) {
-      Alert.alert('Error', 'Could not start recording');
-    }
-  }, []);
+      
+      await Audio.setAudioModeAsync({ 
+        allowsRecordingIOS: true, 
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
 
-  const stopRecording = useCallback(async () => {
+      // Create recording with high quality settings
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+
+      setRecording(recording);
+      setIsStreamingAudio(true);
+
+      // Note: For production audio streaming, you'd typically use a more sophisticated
+      // approach to capture audio chunks in real-time rather than periodically
+      // reading the entire recording file. This is a simplified implementation.
+
+    } catch (e) {
+      Alert.alert('Error', 'Could not start audio streaming');
+      setIsStreamingAudio(false);
+    }
+  }, [wsState]);
+
+  const stopAudioStreaming = useCallback(async () => {
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
+
     if (!recording) return;
+    
     try {
       await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      if (!uri) return;
-      setLoading(true);
-      const resp = await sendChatMessage({ type: 'audio', mediaUri: uri });
-      appendBackendMessages(resp);
+      
+      // Commit the final audio input
+      if (wsRef.current && wsState === 'open') {
+        wsRef.current.commitAudioInput();
+      }
+      
+      // Add a user message indicating audio was sent
+      setMessages(prev => [...prev, { 
+        id: 'user-audio-' + Date.now(), 
+        role: 'user', 
+        content: '[Audio message]', 
+        createdAt: Date.now(), 
+        type: 'text' 
+      }]);
+      
     } catch (e) {
-      Alert.alert('Error', 'Could not stop/send audio');
+      Alert.alert('Error', 'Could not stop audio streaming');
     } finally {
       setRecording(null);
-      setLoading(false);
+      setIsStreamingAudio(false);
     }
-  }, [recording]);
+  }, [recording, wsState]);
 
   const toggleRecording = useCallback(() => {
-    if (recording) {
-      stopRecording();
+    if (isStreamingAudio) {
+      stopAudioStreaming();
     } else {
-      startRecording();
+      startAudioStreaming();
     }
-  }, [recording, startRecording, stopRecording]);
+  }, [isStreamingAudio, startAudioStreaming, stopAudioStreaming]);
 
   // (Deprecated) formHeight logic removed – top shutter overlay handles sizing.
 
@@ -286,7 +367,7 @@ export const ChatScreen: React.FC = () => {
           <Ionicons name="image-outline" size={22} color="#374151" />
         </TouchableOpacity>
         <TouchableOpacity style={styles.iconBtn} onPress={toggleRecording}>
-          <Ionicons name={recording ? 'stop-circle-outline' : 'mic-outline'} size={22} color={recording ? '#dc2626' : '#374151'} />
+          <Ionicons name={isStreamingAudio ? 'stop-circle-outline' : 'mic-outline'} size={22} color={isStreamingAudio ? '#dc2626' : '#374151'} />
         </TouchableOpacity>
 
         <TextInput

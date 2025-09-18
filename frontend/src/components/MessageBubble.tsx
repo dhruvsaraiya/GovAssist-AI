@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity } from 'react-native';
 import { dbg } from '../services/debug';
 import { Audio } from 'expo-av';
@@ -11,6 +11,49 @@ interface Props { message: ChatMessage }
 
 export const MessageBubble: React.FC<Props> = ({ message }) => {
   const isUser = message.role === 'user';
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+
+  const handlePlayAudio = useCallback(async () => {
+    if (!message.mediaUri || message.type !== 'audio') return;
+
+    try {
+      if (isPlaying && sound) {
+        // Stop current playback
+        await sound.stopAsync();
+        setIsPlaying(false);
+        return;
+      }
+
+      // Create and play audio
+      const { sound: audioSound } = await Audio.Sound.createAsync(
+        { uri: message.mediaUri },
+        { shouldPlay: true }
+      );
+      
+      setSound(audioSound);
+      setIsPlaying(true);
+
+      // Set up completion handler
+      audioSound.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded && status.didJustFinish) {
+          setIsPlaying(false);
+          audioSound.unloadAsync();
+          setSound(null);
+        }
+      });
+
+    } catch (error) {
+      console.warn('Error playing audio:', error);
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Failed to play audio message',
+        visibilityTime: 3000,
+      });
+      setIsPlaying(false);
+    }
+  }, [message.mediaUri, message.type, isPlaying, sound]);
 
   const handleCopy = async () => {
     try {
@@ -42,7 +85,16 @@ export const MessageBubble: React.FC<Props> = ({ message }) => {
             <Image source={{ uri: message.mediaUri }} style={styles.image} />
           ) : (message.type === 'image' && message.mediaUri ? (dbg('image', 'skipping invalid uri', message.mediaUri), null) : null)}
           {message.type === 'audio' && (
-            <Text style={styles.audioPlaceholder}>[Audio message]</Text>
+            <TouchableOpacity style={styles.audioContainer} onPress={handlePlayAudio}>
+              <Ionicons 
+                name={isPlaying ? 'pause-circle' : 'play-circle'} 
+                size={24} 
+                color={isUser ? '#ffffff' : '#2563eb'} 
+              />
+              <Text style={[styles.audioText, isUser ? styles.userText : styles.assistantText]}>
+                {isPlaying ? 'Playing...' : 'Audio message'}
+              </Text>
+            </TouchableOpacity>
           )}
           {message.content?.length > 0 && (
             <Text style={[styles.text, isUser ? styles.userText : styles.assistantText]}>{message.content}</Text>
@@ -82,6 +134,18 @@ const styles = StyleSheet.create({
   text: { color: '#111827' },
   userText: { color: '#ffffff' },
   assistantText: { color: '#111827' },
+  audioContainer: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.05)'
+  },
+  audioText: { 
+    marginLeft: 8, 
+    fontSize: 14,
+    fontWeight: '500'
+  },
   audioPlaceholder: { fontStyle: 'italic', color: '#374151' },
   image: { width: 180, height: 120, borderRadius: 12, marginBottom: 6, backgroundColor: '#ddd' },
   copyButton: {

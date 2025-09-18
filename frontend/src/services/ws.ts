@@ -5,6 +5,7 @@ export type WSState = 'connecting' | 'open' | 'closed';
 
 export interface AssistantDeltaEvent { type: 'assistant_delta'; delta: string }
 export interface AssistantMessageEvent { type: 'assistant_message'; message: ChatMessageLike }
+export interface UserAudioTranscriptEvent { type: 'user_audio_transcript'; transcript: string }
 export interface FormOpenEvent { type: 'form_open'; url: string }
 export interface FormFieldUpdateEvent { 
   type: 'form_field_update'; 
@@ -21,20 +22,22 @@ export interface FormFieldErrorEvent { type: 'form_field_error'; error: string; 
 export interface AckEvent { type: 'ack'; message_id: string }
 export interface ErrorEvent { type: 'error'; error: string }
 export interface PongEvent { type: 'pong' }
-export type IncomingEvent = AssistantDeltaEvent | AssistantMessageEvent | FormOpenEvent | FormFieldUpdateEvent | FormFieldFocusEvent | FormCompletedEvent | FormFieldErrorEvent | AckEvent | ErrorEvent | PongEvent;
+export type IncomingEvent = AssistantDeltaEvent | AssistantMessageEvent | UserAudioTranscriptEvent | FormOpenEvent | FormFieldUpdateEvent | FormFieldFocusEvent | FormCompletedEvent | FormFieldErrorEvent | AckEvent | ErrorEvent | PongEvent;
 
 export interface ChatMessageLike {
   id?: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
-  type?: 'text';
+  type?: 'text' | 'audio';
   form_url?: string | null;
+  audio_data?: string;
 }
 
 export interface WSListeners {
   onState?: (s: WSState) => void;
   onDelta?: (delta: string) => void;
   onAssistantMessage?: (msg: ChatMessageLike) => void;
+  onUserAudioTranscript?: (transcript: string) => void;
   onFormOpen?: (url: string) => void;
   onFormFieldUpdate?: (fieldId: string, value: any, progress: any) => void;
   onFormFieldFocus?: (fieldId: string, progress: any) => void;
@@ -121,6 +124,10 @@ export class ChatWebSocket {
           this.listeners.onFormOpen?.(formUrl);
         }
         break;
+      // Audio delta removed - now handled as complete audio messages
+      case 'user_audio_transcript':
+        this.listeners.onUserAudioTranscript?.(evt.transcript || '');
+        break;
       case 'form_open':
         // Ensure form URLs use HTTP protocol
         const formUrl = evt.url.replace(/^ws:\/\//, 'http://');
@@ -159,6 +166,22 @@ export class ChatWebSocket {
       return;
     }
     this.ws.send(JSON.stringify({ type: 'user_message', content }));
+  }
+
+  sendAudioChunk(audioData: string) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.listeners.onError?.('socket_not_open');
+      return;
+    }
+    this.ws.send(JSON.stringify({ type: 'audio_chunk', audio_data: audioData }));
+  }
+
+  commitAudioInput() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.listeners.onError?.('socket_not_open');
+      return;
+    }
+    this.ws.send(JSON.stringify({ type: 'audio_commit' }));
   }
 
   cleanup() {
