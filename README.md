@@ -39,20 +39,26 @@ npm start   # Opens Expo dev tools (press a for Android, i for iOS, w for web)
 ```
 
 ### Current Features
-* Chat screen with text, image, and audio (multipart upload) integrated with backend echo API
-* Backend FastAPI `/api/chat` endpoint accepts text/image/audio and returns structured messages
-* Automatic detection of certain trigger phrases (e.g. "tax form", "passport form", "visa form") that returns a `form_url` in the assistant message
-* Phase 1 (implemented): Basic assistant-provided `form_url` contract (Pydantic `ChatMessage.form_url`) with allow‑listed government domains
-* Phase 2 (implemented): Draggable top-attached shutter (`TopFormShutter`) rendering the form inside a WebView while keeping the input bar always accessible
-* Health check endpoint and platform-aware (Android emulator) backend URL selection in frontend config
+* Chat screen with text, image, and audio (multipart upload) integrated with backend
+* Real-time WebSocket connection for streaming AI responses and form interactions
+* Azure OpenAI Realtime API integration for voice-to-text transcription and AI responses
+* Intelligent form activation based on keyword detection (Aadhaar, Income/Mudra loans)
+* Step-by-step conversational form filling with field validation and progress tracking
+* Draggable top-attached shutter (`FormWebView`) rendering forms with real-time field updates
+* Voice input with PCM16 audio streaming for natural conversation
+* Automatic form field highlighting and completion tracking
+* Error handling with intelligent user intent interpretation
+* Health check endpoint and platform-aware backend URL selection
 
-### Planned Enhancements
-* LLM-generated assistant responses instead of simple echo
-* Persist conversation context & multi-turn session management
-* Enhanced URL validation (strict allowlist, signature or server-side retrieval proxy)
-* Automated form field extraction & auto-fill within the WebView (accessibility-first design)
-* Offline caching / retry queue for messages & form progress
-* Security hardening (origin isolation, CSP headers for in-app browser) 
+### Completed Enhancements
+* ✅ LLM-generated assistant responses via Azure OpenAI Realtime API
+* ✅ Real-time WebSocket communication for streaming responses
+* ✅ Voice input processing with Azure Realtime audio transcription
+* ✅ Conversational form filling with intelligent field interpretation
+* ✅ Form session management with progress tracking
+* ✅ Field-by-field form completion with validation
+* ✅ Intent extraction and entity mapping to form fields
+* ✅ WebView form integration with automated field updates
 
 ## Backend (FastAPI)
 
@@ -77,36 +83,82 @@ pytest -q
 ```
 
 ### API Summary
-`POST /api/chat` – Multipart form-data endpoint:
-* text: `text` + `media_type=text`
-* image/audio upload: `file` + `media_type=image|audio`
+* `WebSocket /api/chat/ws` – Real-time chat with streaming AI responses
+* `POST /api/chat` – Multipart form-data endpoint for fallback audio transcription
+* `POST /api/chat/restart` – Clear all active form sessions
 
-Returns array `[user_msg, assistant_msg]` where `assistant_msg` may include:
-* `form_url` – If a trigger phrase or explicit `form:` URL (allow‑listed host) was detected.
-* `media_uri` – Placeholder reference for uploaded file (future: real storage location).
+WebSocket Events:
+* `user_message` – Send text input to AI
+* Binary frames – Send audio chunks for real-time transcription
+* `assistant_delta` – Streaming AI response chunks
+* `assistant_message` – Complete AI responses with form activation
+* `form_field_focus` – Highlight specific form fields
+* `form_field_update` – Update form field values
+* `form_completed` – Form submission completion
 
 ## Frontend <-> Backend Integration Notes
-* See `frontend/src/services/api.ts` for multipart implementation.
-* Android emulator uses `10.0.2.2` automatically (see `config.ts`). Override via `EXPO_PUBLIC_BACKEND_HOST` env var if needed.
-* When a `form_url` arrives, `ChatScreen` sets `activeFormUrl` and renders a draggable top shutter (`TopFormShutter`) WebView. Closing the shutter does not remove the historical message containing the URL.
-* Multiple future `form_url` messages will currently replace the active sheet with the newest form (simple heuristic).
+* WebSocket connection with automatic reconnection and keepalive
+* Azure OpenAI Realtime API for streaming voice and text processing
+* Real-time audio streaming with PCM16 format and WAV header stripping
+* Form session management with field-by-field progression
+* Intelligent error handling and user intent interpretation
+* Speech detection feedback with real-time transcription display
 
 ## Development Notes
-* CORS is currently wide open (`*`) – restrict origins before production.
-* File upload handling is placeholder (no persistence or virus scanning yet).
-* `form_url` allowlist is naive substring-based; replace with robust domain & path validation before production.
-* Media URIs in responses are mock references – implement storage layer later.
-* Top shutter uses a minimal animated snap implementation; consider `@gorhom/bottom-sheet` (adapted for top usage) or a custom Reanimated solution for production-grade performance & accessibility.
+* Audio processing uses Azure Realtime API with 120ms minimum buffer threshold
+* Form sessions track progress with field validation and completion
+* Voice input requires 2-3 seconds minimum for reliable transcription
+* WebSocket handles both text and binary (audio) frame types
+* Form field updates are synchronized between chat and WebView
 
 ## Next Steps / Roadmap
-1. Conversation/session IDs & persistence.
-2. Integrate LLM for contextual assistant responses.
-3. Strong URL sanitization & signed proxy retrieval for forms.
-4. Intent extraction + entity mapping to form fields.
-5. WebView automation: DOM injection / accessibility tree parsing to populate fields.
-6. Form progress tracking & resume.
-7. Add secure auth / rate limiting & audit logging.
-8. Add lightweight analytics (anonymized) for flow optimization.
+
+### Phase 3 - Production Readiness (Current Priority)
+1. **Security & Performance**
+   - Implement robust authentication and user session management
+   - Add rate limiting and abuse protection for voice/AI endpoints
+   - Secure form URL validation with signed proxies
+   - Add input sanitization and XSS protection for WebView content
+
+2. **Enhanced User Experience**
+   - Multi-language support for regional Indian languages
+   - Offline mode with message queuing and sync
+   - Voice commands for form navigation ("next field", "go back")
+   - Smart form pre-filling from user profile/previous submissions
+
+3. **Advanced Form Processing**
+   - OCR integration for document scanning and auto-fill
+   - Form validation with government database verification
+   - Digital signature integration for official submissions
+   - Progress saving and resume across sessions
+
+### Phase 4 - Scale & Analytics
+4. **Infrastructure & Monitoring**
+   - Azure deployment with auto-scaling and load balancing
+   - Comprehensive logging and error tracking
+   - Performance monitoring and optimization
+   - Database integration for user data and form history
+
+5. **Advanced AI Features**
+   - Context-aware form suggestions based on user profile
+   - Predictive field completion using historical data
+   - Multi-turn conversation memory across form sessions
+   - Integration with government APIs for real-time validation
+
+6. **Business Features**
+   - Admin dashboard for form management and user analytics
+   - Bulk form processing for organizations
+   - Integration with government portals and services
+   - Compliance reporting and audit trails
+
+### Completed Items
+* ✅ Real-time WebSocket communication with streaming responses
+* ✅ Azure OpenAI Realtime API integration for voice and text
+* ✅ Conversational form filling with step-by-step guidance
+* ✅ Form session management with progress tracking
+* ✅ Voice input with real-time transcription and response
+* ✅ Field validation and intelligent error handling
+* ✅ WebView form integration with automated updates
 
 ## License
 TBD.
