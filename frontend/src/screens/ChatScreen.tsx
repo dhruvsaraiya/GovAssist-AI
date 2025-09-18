@@ -297,7 +297,31 @@ export const ChatScreen: React.FC = () => {
       const perm = await Audio.requestPermissionsAsync();
       if (!perm.granted) { Alert.alert('Permission required', 'Microphone permission is needed'); return; }
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+
+      // Custom PCM16 mono 16k options (aiming for easier realtime ingestion)
+      const recordingOptions: Audio.RecordingOptions = {
+        android: {
+          extension: '.wav',
+          outputFormat: Audio.AndroidOutputFormat.DEFAULT, // container may still be WAV/PCM
+          audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 256000
+        },
+        ios: {
+          extension: '.wav',
+          audioQuality: Audio.IOSAudioQuality.HIGH,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 256000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false
+        },
+        web: {}
+      };
+
+      const { recording } = await Audio.Recording.createAsync(recordingOptions);
       setRecording(recording);
       
       // Show helpful message about recording

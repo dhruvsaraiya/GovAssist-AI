@@ -42,10 +42,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-# WELCOME_GREETING_MESSAGE = (
-#     "Provide a brief, friendly welcome letting the user know you can help with government forms "
-#     "and form filling. Do NOT trigger or mention any specific form yet; just ask how you can help."
-# )
+WELCOME_GREETING_MESSAGE = (
+    "Provide a brief, friendly welcome letting the user know you can help with government forms "
+    "and form filling. Do NOT trigger or mention any specific form yet; just ask how you can help."
+)
 
 system_prompt = """
 You are a government services assistant that helps users access official forms and fill them step by step.
@@ -204,23 +204,29 @@ class AzureRealtimeBridge:
 
         logger.info("[azure] Connected (%.2f ms)", (time.perf_counter() - connect_started) * 1000)
 
-        # Configure session for text only to avoid audio format issues
-        # We'll handle audio via Whisper transcription instead
+        # Configure session WITH audio again (use server VAD + transcription)
         session_cfg = {
             "type": "session.update",
             "session": {
-                "modalities": ["text"],  # Use text only for now
+                "modalities": ["text", "audio"],
                 "instructions": system_prompt,
                 "voice": "alloy",
+                "input_audio_format": "pcm16",  # We will send raw PCM16 frames (header stripped if WAV)
+                "output_audio_format": "pcm16",
+                "input_audio_transcription": {"model": "whisper-1"},
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.5,
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 600
+                },
                 "tool_choice": "none",
             },
         }
         logger.info("[azure->] session.update: %s", json.dumps(session_cfg, ensure_ascii=False))
         await self.ws.send(json.dumps(session_cfg))  # type: ignore
-
-        # Don't send separate system instructions since they're in session config
         self._system_sent = True
-        logger.info("[azure->] Session configured for text mode")
+        logger.info("[azure->] Session configured for text and audio mode")
 
         # Start background receiver
         self._recv_task = asyncio.create_task(self._receiver_loop())
@@ -346,71 +352,50 @@ class AzureRealtimeBridge:
         await self.send_user_message(transcript)
 
     async def send_audio_chunk(self, audio_data: bytes):
-        """Process audio via Whisper transcription instead of realtime API."""
-        logger.info(f"[azure] Processing audio chunk via Whisper transcription, size: {len(audio_data)} bytes")
-        
-        # Use the existing transcription logic from the POST endpoint
-        if AzureOpenAI is None:
-            raise RuntimeError("AzureOpenAI SDK not available for transcription")
-        
-        if not self.settings.azure_openai_endpoint or not (self.settings.azure_openai_key or self.settings.azure_openai_api_key):
-            raise RuntimeError("Azure OpenAI not configured for audio")
-        
-        audio_deployment = (
-            getattr(self.settings, "azure_openai_whisper_deployment", None)
-            or getattr(self.settings, "azure_openai_audio_deployment", None)
-            or "whisper"
-        )
-        
+        """Send audio bytes (PCM16 mono 16k) to Azure Realtime (no AzureOpenAI SDK)."""
+        async with self._lock:
+            await self.ensure_connected()
+            if not self.ws or self.ws.close_code is not None:
+                raise RuntimeError("Azure realtime websocket not available")
+
+        # Prepare audio (strip simple WAV header if present)
+        def _strip_wav_header(data: bytes) -> bytes:
+            # Minimal heuristic: RIFF .... WAVE
+            if len(data) > 44 and data[0:4] == b"RIFF" and data[8:12] == b"WAVE":
+                # Standard PCM header usually 44 bytes; do not validate deeply
+                return data[44:]
+            return data
+
+        raw = _strip_wav_header(audio_data)
+        if not raw:
+            logger.warning("[audio] Empty raw audio after header strip; skipping")
+            return
+
+        # Base64 encode raw PCM16
+        b64_audio = base64.b64encode(raw).decode("utf-8")
+        msg = {
+            "type": "input_audio_buffer.append",
+            "audio": b64_audio,
+        }
         try:
-            client = AzureOpenAI(
-                api_key=(self.settings.azure_openai_key or self.settings.azure_openai_api_key),
-                api_version=self.settings.openai_api_version,
-                azure_endpoint=self.settings.azure_openai_endpoint,
-            )
-            
-            # Save audio data to temporary file
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
-                tmp.write(audio_data)
-                tmp_path = tmp.name
-            
-            # Transcribe the audio
-            with open(tmp_path, "rb") as audio_f:
-                result = client.audio.transcriptions.create(
-                    model=audio_deployment,
-                    file=audio_f,
-                    response_format="json"
-                )
-            
-            transcript = getattr(result, "text", None) or (isinstance(result, dict) and result.get("text"))
-            
-            # Clean up temp file
-            import os
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
-            
-            if transcript and transcript.strip():
-                logger.info(f"[azure] Whisper transcription completed: '{transcript[:100]}'")
-                # Send transcript to frontend
-                await self._emit_frontend({"type": "transcript", "transcript": transcript})
-                # Process transcript as user input
-                await self._process_transcribed_input(transcript)
-            else:
-                logger.warning(f"[azure] Empty transcription result")
-                await self._emit_frontend({"type": "error", "error": "transcription_empty"})
-                
-        except Exception as e:
-            logger.exception(f"[azure] Whisper transcription failed: %s", e)
-            await self._emit_frontend({"type": "error", "error": f"transcription_failed:{str(e)}"})
-            raise
+            await self.ws.send(json.dumps(msg))  # type: ignore
+            logger.debug("[azure->] input_audio_buffer.append bytes=%d (raw=%d)", len(b64_audio), len(raw))
+        except Exception:
+            logger.exception("[azure] Failed sending audio chunk")
 
     async def commit_audio_buffer(self):
-        """No-op since we're using Whisper transcription instead of realtime audio."""
-        logger.info(f"[azure] Audio buffer processing completed via Whisper")
-        pass
+        """Commit current audio buffer so server VAD/transcription can finalize."""
+        async with self._lock:
+            await self.ensure_connected()
+            if not self.ws or self.ws.close_code is not None:
+                return
+            try:
+                await self.ws.send(json.dumps({"type": "input_audio_buffer.commit"}))  # type: ignore
+                # Request a response (transcription -> model reply) if needed
+                await self.ws.send(json.dumps({"type": "response.create", "response": {"modalities": ["text"], "conversation": "auto"}}))  # type: ignore
+                logger.debug("[azure->] committed audio buffer & requested response")
+            except Exception:
+                logger.exception("[azure] commit_audio_buffer failed")
 
     def _calculate_response_duration(self) -> Optional[float]:
         if self._last_request_started is not None:
@@ -1001,19 +986,19 @@ async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
         logger.info("[client %s] Flushing audio buffer bytes=%d reason=%s", client_id, len(buf), reason)
         
         try:
-            # Lower minimum audio size since we're using Whisper which is more flexible
-            min_audio_size = 2000  # ~125ms worth of audio data
-            
-            if len(buf) < min_audio_size and reason not in ["disconnect", "explicit_commit"]:
+            min_audio_size = 4000  # keep ~250ms
+            if len(buf) < min_audio_size and reason not in ["disconnect", "explicit_commit", "debounce_timeout"]:
                 logger.warning("[client %s] Audio buffer too small (%d bytes), accumulating more. Need at least %d bytes", 
                              client_id, len(buf), min_audio_size)
                 # Put the data back in buffer for next flush
                 audio_buffer = bytearray(buf) + audio_buffer
                 return
             
-            # Process audio via Whisper transcription
+            # Send raw chunk to realtime
             await bridge.send_audio_chunk(buf)
-            logger.info("[client %s] Audio processed via Whisper transcription", client_id)
+            # Always commit after a flush to trigger transcription sooner
+            await bridge.commit_audio_buffer()
+            logger.info("[client %s] Audio processed via realtime streaming", client_id)
             
             # Reset the accumulation counter
             audio_total_sent = 0
@@ -1027,14 +1012,12 @@ async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
         finally:
             audio_in_progress = False
 
-    # Reduce debounce time since Whisper is more flexible with audio formats
     def _schedule_audio_flush():
         nonlocal audio_flush_task
         if audio_flush_task and not audio_flush_task.done():
             audio_flush_task.cancel()
         async def _debounced():
             try:
-                # Shorter debounce for better responsiveness
                 await asyncio.sleep(1.2)  # 1.2 seconds to ensure we get enough audio
                 await _flush_audio("debounce_timeout")
             except asyncio.CancelledError:
