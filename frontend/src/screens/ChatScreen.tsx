@@ -89,6 +89,11 @@ export const ChatScreen: React.FC = () => {
           }
         });
       },
+      onAudioDelta: (delta) => {
+        // For now, just log audio streaming deltas
+        // In a full implementation, you might accumulate these and play them
+        console.log('[audio delta]', delta.length, 'bytes');
+      },
       onAssistantMessage: (m) => {
         setMessages(prev => {
           // finalize streaming message if exists
@@ -96,6 +101,21 @@ export const ChatScreen: React.FC = () => {
             streamingMsgRef.current = null;
           }
           const msg: ChatMessage = { id: m.id || 'assistant-' + Date.now(), role: 'assistant', content: m.content, createdAt: Date.now(), type: 'text', formUrl: m.form_url || undefined };
+          return [...prev, msg];
+        });
+      },
+      onAudioMessage: (m) => {
+        console.log('[audio message received]', m);
+        setMessages(prev => {
+          const msg: ChatMessage = { 
+            id: m.id || 'audio-' + Date.now(), 
+            role: 'assistant', 
+            content: m.content, 
+            createdAt: Date.now(), 
+            type: 'audio',
+            mediaUri: m.media_uri,
+            audioData: m.audio_data  // Include base64 audio data
+          };
           return [...prev, msg];
         });
       },
@@ -230,16 +250,33 @@ export const ChatScreen: React.FC = () => {
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
       if (!uri) return;
-      setLoading(true);
-      const resp = await sendChatMessage({ type: 'audio', mediaUri: uri });
-      appendBackendMessages(resp);
+      
+      // Add user's audio message to chat
+      setMessages(prev => [...prev, { 
+        id: 'user-audio-' + Date.now(), 
+        role: 'user', 
+        content: 'Audio message', 
+        createdAt: Date.now(), 
+        type: 'audio',
+        mediaUri: uri
+      }]);
+
+      // Send via WebSocket if available, otherwise fallback to HTTP
+      if (wsRef.current && wsState === 'open') {
+        await wsRef.current.sendAudioMessage(uri);
+      } else {
+        setLoading(true);
+        const resp = await sendChatMessage({ type: 'audio', mediaUri: uri });
+        appendBackendMessages(resp);
+        setLoading(false);
+      }
     } catch (e) {
       Alert.alert('Error', 'Could not stop/send audio');
+      setLoading(false);
     } finally {
       setRecording(null);
-      setLoading(false);
     }
-  }, [recording]);
+  }, [recording, wsState]);
 
   const toggleRecording = useCallback(() => {
     if (recording) {

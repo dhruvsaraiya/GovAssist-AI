@@ -4,7 +4,11 @@ import { ChatMessage } from '../types/chat';
 export type WSState = 'connecting' | 'open' | 'closed';
 
 export interface AssistantDeltaEvent { type: 'assistant_delta'; delta: string }
+export interface AssistantAudioDeltaEvent { type: 'assistant_audio_delta'; delta: string }
 export interface AssistantMessageEvent { type: 'assistant_message'; message: ChatMessageLike }
+export interface AudioMessageEvent { type: 'audio_message'; message: ChatMessageLike }
+export interface AssistantMessageEvent { type: 'assistant_message'; message: ChatMessageLike }
+export interface AudioMessageEvent { type: 'audio_message'; message: ChatMessageLike }
 export interface FormOpenEvent { type: 'form_open'; url: string }
 export interface FormFieldUpdateEvent { 
   type: 'form_field_update'; 
@@ -21,20 +25,24 @@ export interface FormFieldErrorEvent { type: 'form_field_error'; error: string; 
 export interface AckEvent { type: 'ack'; message_id: string }
 export interface ErrorEvent { type: 'error'; error: string }
 export interface PongEvent { type: 'pong' }
-export type IncomingEvent = AssistantDeltaEvent | AssistantMessageEvent | FormOpenEvent | FormFieldUpdateEvent | FormFieldFocusEvent | FormCompletedEvent | FormFieldErrorEvent | AckEvent | ErrorEvent | PongEvent;
+export type IncomingEvent = AssistantDeltaEvent | AssistantAudioDeltaEvent | AssistantMessageEvent | AudioMessageEvent | FormOpenEvent | FormFieldUpdateEvent | FormFieldFocusEvent | FormCompletedEvent | FormFieldErrorEvent | AckEvent | ErrorEvent | PongEvent;
 
 export interface ChatMessageLike {
   id?: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
-  type?: 'text';
+  type?: 'text' | 'audio';
   form_url?: string | null;
+  media_uri?: string;
+  audio_data?: string;  // base64 audio data
 }
 
 export interface WSListeners {
   onState?: (s: WSState) => void;
   onDelta?: (delta: string) => void;
+  onAudioDelta?: (delta: string) => void;
   onAssistantMessage?: (msg: ChatMessageLike) => void;
+  onAudioMessage?: (msg: ChatMessageLike) => void;
   onFormOpen?: (url: string) => void;
   onFormFieldUpdate?: (fieldId: string, value: any, progress: any) => void;
   onFormFieldFocus?: (fieldId: string, progress: any) => void;
@@ -113,6 +121,9 @@ export class ChatWebSocket {
       case 'assistant_delta':
         this.listeners.onDelta?.(evt.delta || '');
         break;
+      case 'assistant_audio_delta':
+        this.listeners.onAudioDelta?.(evt.delta || '');
+        break;
       case 'assistant_message':
         this.listeners.onAssistantMessage?.(evt.message);
         // Check if the message contains form information
@@ -120,6 +131,9 @@ export class ChatWebSocket {
           const formUrl = `http://${BACKEND_HOST}:${BACKEND_PORT}${evt.form.url}`;
           this.listeners.onFormOpen?.(formUrl);
         }
+        break;
+      case 'audio_message':
+        this.listeners.onAudioMessage?.(evt.message);
         break;
       case 'form_open':
         // Ensure form URLs use HTTP protocol
@@ -159,6 +173,28 @@ export class ChatWebSocket {
       return;
     }
     this.ws.send(JSON.stringify({ type: 'user_message', content }));
+  }
+
+  async sendAudioMessage(audioUri: string) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.listeners.onError?.('socket_not_open');
+      return;
+    }
+
+    try {
+      // Convert blob URI to base64 data
+      const response = await fetch(audioUri);
+      const blob = await response.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+      
+      this.ws.send(JSON.stringify({ 
+        type: 'user_audio_message', 
+        audio_data: base64
+      }));
+    } catch (error) {
+      this.listeners.onError?.('Failed to process audio: ' + String(error));
+    }
   }
 
   cleanup() {

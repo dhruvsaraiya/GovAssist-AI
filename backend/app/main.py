@@ -60,6 +60,12 @@ for d in candidates:
 if not mounted:
     logging.getLogger(__name__).warning("No demo forms found; skipping /forms mount. Tried: %s", candidates)
 
+# Mount static directory for audio files and other static content
+static_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'static'))
+if os.path.isdir(static_dir):
+    app.mount('/static', StaticFiles(directory=static_dir), name='static')
+    logging.getLogger(__name__).info("Mounted static files from %s at /static", static_dir)
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
