@@ -1,0 +1,179 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Pradhan Mantri Mudra Yojana - Loan Application (Demo)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, sans-serif; padding: 18px; }
+    h1 { text-align:center; font-size:18px; }
+    label { display:block; margin-top:10px; font-weight:600; }
+    input, select, textarea { width:100%; padding:8px; margin-top:6px; box-sizing:border-box; }
+    .row { display:flex; gap:12px; }
+    .col { flex:1; }
+    .half { width:48%; display:inline-block; vertical-align:top }
+    table { width:100%; border-collapse: collapse; margin-top:8px }
+    td, th { border:1px solid #999; padding:6px; }
+    .small { width:120px }
+    button { margin-top:16px; padding:8px 12px }
+  </style>
+</head>
+<body>
+  <h1>PRADHAN MANTRI MUDRA YOJANA - LOAN APPLICATION (Demo)</h1>
+
+  <section>
+    <label for="enterprise_name">Enterprise Name</label>
+    <input id="enterprise_name" name="enterprise_name" />
+
+    <div class="row">
+      <div class="col">
+        <label for="application_sl_no">Application Sl. No.</label>
+        <input id="application_sl_no" name="application_sl_no" />
+      </div>
+      <div class="col">
+        <label for="branch_name">Name of the Branch</label>
+        <input id="branch_name" name="branch_name" />
+      </div>
+      <div class="col">
+        <label for="category">Category</label>
+        <select id="category" name="category">
+          <option value="Shishu">Shishu</option>
+          <option value="Kishor">Kishor</option>
+          <option value="Tarun">Tarun</option>
+        </select>
+      </div>
+    </div>
+
+    <label for="constitution">Constitution</label>
+    <select id="constitution" name="constitution">
+      <option>Proprietary</option>
+      <option>Partnership</option>
+      <option>Pvt. Ltd.</option>
+      <option>Ltd. Company</option>
+      <option>Other</option>
+    </select>
+
+    <label>Current Business Address</label>
+    <input id="address_line1" name="address_line1" placeholder="Address line 1" />
+    <div class="row">
+      <div class="col small">
+        <label for="state">State</label>
+        <input id="state" name="state" />
+      </div>
+      <div class="col small">
+        <label for="pin_code">PIN Code</label>
+        <input id="pin_code" name="pin_code" />
+      </div>
+      <div class="col">
+        <label for="premises">Business Premises</label>
+        <select id="premises" name="premises"><option>Rented</option><option>Owned</option></select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col">
+        <label for="telephone">Telephone No.</label>
+        <input id="telephone" name="telephone" />
+      </div>
+      <div class="col">
+        <label for="mobile">Mobile No.</label>
+        <input id="mobile" name="mobile" />
+      </div>
+    </div>
+
+    <label for="email">E-mail</label>
+    <input id="email" name="email" />
+
+    <label for="business_activity">Business Activity (Existing / Proposed)</label>
+    <input id="business_activity" name="business_activity" />
+
+    <div class="row">
+      <div class="col">
+        <label for="date_commencement">Date of Commencement (DD/MM/YYYY)</label>
+        <input id="date_commencement" name="date_commencement" placeholder="YYYY-MM-DD" />
+      </div>
+      <div class="col">
+        <label for="unit_registered">Unit Registered?</label>
+        <select id="unit_registered" name="unit_registered"><option>Yes</option><option>No</option></select>
+      </div>
+    </div>
+
+    <label for="registration_no">If Registered - Registration No. / Act</label>
+    <input id="registration_no" name="registration_no" />
+
+    <label for="registered_office_address">Registered Office Address</label>
+    <textarea id="registered_office_address" name="registered_office_address" rows="3"></textarea>
+
+    <label>Skill Certified</label>
+    <select id="skill_certified" name="skill_certified"><option>Skilled</option><option>Self Skilled</option><option>Unskilled</option></select>
+
+    <label>Social Category</label>
+    <select id="social_category" name="social_category"><option>SC</option><option>ST</option><option>OBC</option><option>General</option></select>
+
+  </section>
+
+  <section>
+    <h3>Background Information of Proprietor/Partners/Directors</h3>
+    <table>
+      <thead><tr><th>S.No</th><th>Name</th><th>Date of Birth</th><th>Sex</th><th>Residential Address with Mobile No.</th><th>Academic Qualification</th><th>Experience (Years)</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><input id="p1_name" name="p1_name" /></td><td><input id="p1_dob" name="p1_dob" /></td><td><input id="p1_sex" name="p1_sex" /></td><td><input id="p1_address" name="p1_address" /></td><td><input id="p1_qual" name="p1_qual" /></td><td><input id="p1_exp" name="p1_exp" /></td></tr>
+        <tr><td>2</td><td><input id="p2_name" name="p2_name" /></td><td><input id="p2_dob" name="p2_dob" /></td><td><input id="p2_sex" name="p2_sex" /></td><td><input id="p2_address" name="p2_address" /></td><td><input id="p2_qual" name="p2_qual" /></td><td><input id="p2_exp" name="p2_exp" /></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h3>ID & Address Proof</h3>
+    <table>
+      <thead><tr><th>S.No</th><th>ID proof</th><th>ID proof No.</th><th>Address proof</th><th>Address proof no.</th><th>PAN Card/DIN No.</th><th>Relationship with bank official</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><input id="id1_type" name="id1_type" /></td><td><input id="id1_no" name="id1_no" /></td><td><input id="addr1_type" name="addr1_type" /></td><td><input id="addr1_no" name="addr1_no" /></td><td><input id="pan1" name="pan1" /></td><td><input id="rel1" name="rel1" /></td></tr>
+        <tr><td>2</td><td><input id="id2_type" name="id2_type" /></td><td><input id="id2_no" name="id2_no" /></td><td><input id="addr2_type" name="addr2_type" /></td><td><input id="addr2_no" name="addr2_no" /></td><td><input id="pan2" name="pan2" /></td><td><input id="rel2" name="rel2" /></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <button type="button" onclick="alert('Submitted (demo)')">Submit</button>
+
+  <script>
+    window.fillForm = function(mapping) {
+      try {
+        for (const k in mapping) {
+          const el = document.getElementById(k) || document.querySelector('[name="' + k + '"]');
+          if (!el) continue;
+          if (el.tagName === 'SELECT') { el.value = mapping[k]; }
+          else if (el.tagName === 'TEXTAREA') { el.value = mapping[k] || ''; }
+          else { el.value = mapping[k] || ''; }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
+    };
+
+    // Listen for individual field updates from parent frame
+    window.addEventListener('message', function(event) {
+      if (event.data && event.data.type === 'UPDATE_FIELD') {
+        console.log('Received field update:', event.data.fieldId, event.data.value);
+        const el = document.getElementById(event.data.fieldId) || document.querySelector('[name="' + event.data.fieldId + '"]');
+        if (el) {
+          el.value = event.data.value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          console.log('Field updated successfully:', event.data.fieldId);
+          
+          // Highlight the field temporarily to show it was updated
+          el.style.backgroundColor = '#e6f3ff';
+          setTimeout(function() {
+            el.style.backgroundColor = '';
+          }, 1000);
+        } else {
+          console.warn('Element not found for field:', event.data.fieldId);
+        }
+      }
+    });
+  </script>
+</body>
+</html>
