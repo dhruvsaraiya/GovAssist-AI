@@ -135,6 +135,11 @@ export class ChatWebSocket {
         break;
       case 'audio_message':
         this.listeners.onAudioMessage?.(evt.message);
+        // If backend included form info with an audio response (audio modality + form marker), open it
+        if (evt.form && evt.form.url) {
+          const audioFormUrl = `http://${BACKEND_HOST}:${BACKEND_PORT}${evt.form.url}`;
+          this.listeners.onFormOpen?.(audioFormUrl);
+        }
         break;
       case 'form_open':
         // Ensure form URLs use HTTP protocol
