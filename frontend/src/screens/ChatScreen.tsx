@@ -17,7 +17,7 @@ import { createChatWebSocket, ChatWebSocket } from '../services/ws';
 
 export const ChatScreen: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([{
-    id: 'welcome', role: 'assistant', content: 'Hi! How can I assist you with government forms today?', createdAt: Date.now(), type: 'text'
+    id: 'welcome', role: 'assistant', content: '', createdAt: Date.now(), type: 'text'
   }]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);

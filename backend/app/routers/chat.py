@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 WELCOME_GREETING_MESSAGE = (
-    "Provide a brief, friendly welcome letting the user know you can help with government forms "
-    "and form filling. Do NOT trigger or mention any specific form yet; just ask how you can help."
+    "Provide a brief, friendly welcome letting the user know you can help with filling the forms"
+    "Do NOT trigger or mention any specific form yet; just ask how you can help. Please use English or Hindi language only."
 )
 
 system_prompt = """
@@ -123,6 +123,12 @@ CRITICAL:
 - Always be conversational and helpful
 - Ask only one field at a time when in form filling mode
 """
+
+# PCM / audio commit thresholds
+PCM_SAMPLE_RATE = 16000  # Hz
+PCM_BYTES_PER_MS = int((PCM_SAMPLE_RATE * 2) / 1000)  # 32 bytes/ms (16-bit mono)
+MIN_COMMIT_MS = 120  # require at least 120ms buffered before committing normally
+MIN_COMMIT_BYTES = PCM_BYTES_PER_MS * MIN_COMMIT_MS  # 3840 bytes
 
 class AzureRealtimeBridge:
     """Manage a single Azure Realtime websocket connection and simple send helpers."""
@@ -327,6 +333,11 @@ class AzureRealtimeBridge:
 
         elif etype == "error":
             err_msg = event.get("error", {}).get("message", "unknown_error")
+            lower = err_msg.lower()
+            # Suppress benign small-buffer audio commit errors
+            if "buffer too small" in lower and "input audio buffer" in lower:
+                logger.info("[azure] Suppressed minor audio commit warning: %s", err_msg)
+                return
             logger.error("[azure] Error event: %s", err_msg)
             await self._emit_frontend({"type": "error", "error": err_msg})
         else:
@@ -352,48 +363,46 @@ class AzureRealtimeBridge:
         await self.send_user_message(transcript)
 
     async def send_audio_chunk(self, audio_data: bytes):
-        """Send audio bytes (PCM16 mono 16k) to Azure Realtime (no AzureOpenAI SDK)."""
+        """Send audio bytes (PCM16 mono 16k) to Azure Realtime (no AzureOpenAI SDK). Returns raw bytes sent."""
         async with self._lock:
             await self.ensure_connected()
             if not self.ws or self.ws.close_code is not None:
                 raise RuntimeError("Azure realtime websocket not available")
 
-        # Prepare audio (strip simple WAV header if present)
         def _strip_wav_header(data: bytes) -> bytes:
-            # Minimal heuristic: RIFF .... WAVE
             if len(data) > 44 and data[0:4] == b"RIFF" and data[8:12] == b"WAVE":
-                # Standard PCM header usually 44 bytes; do not validate deeply
                 return data[44:]
             return data
 
         raw = _strip_wav_header(audio_data)
         if not raw:
             logger.warning("[audio] Empty raw audio after header strip; skipping")
-            return
+            return 0
 
-        # Base64 encode raw PCM16
         b64_audio = base64.b64encode(raw).decode("utf-8")
-        msg = {
-            "type": "input_audio_buffer.append",
-            "audio": b64_audio,
-        }
+        msg = { "type": "input_audio_buffer.append", "audio": b64_audio }
         try:
             await self.ws.send(json.dumps(msg))  # type: ignore
-            logger.debug("[azure->] input_audio_buffer.append bytes=%d (raw=%d)", len(b64_audio), len(raw))
+            logger.debug("[azure->] input_audio_buffer.append raw_bytes=%d", len(raw))
+            return len(raw)
         except Exception:
             logger.exception("[azure] Failed sending audio chunk")
+            return 0
 
-    async def commit_audio_buffer(self):
-        """Commit current audio buffer so server VAD/transcription can finalize."""
+    async def commit_audio_buffer(self, force: bool = False):
+        """Commit current audio buffer if threshold met or force=True."""
         async with self._lock:
             await self.ensure_connected()
             if not self.ws or self.ws.close_code is not None:
                 return
+            # force commit bypasses size check (disconnect/finalize)
             try:
                 await self.ws.send(json.dumps({"type": "input_audio_buffer.commit"}))  # type: ignore
-                # Request a response (transcription -> model reply) if needed
-                await self.ws.send(json.dumps({"type": "response.create", "response": {"modalities": ["text"], "conversation": "auto"}}))  # type: ignore
-                logger.debug("[azure->] committed audio buffer & requested response")
+                await self.ws.send(json.dumps({
+                    "type": "response.create",
+                    "response": {"modalities": ["text"], "conversation": "auto"}
+                }))  # type: ignore
+                logger.debug("[azure->] committed audio buffer")
             except Exception:
                 logger.exception("[azure] commit_audio_buffer failed")
 
@@ -971,10 +980,11 @@ async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
     audio_last_ts: float = 0.0
     audio_flush_task: Optional[asyncio.Task] = None
     audio_in_progress = False
-    audio_total_sent = 0  # Track total audio sent to Azure
+    audio_total_sent = 0
+    audio_bytes_since_commit = 0  # NEW
 
     async def _flush_audio(reason: str):
-        nonlocal audio_buffer, audio_flush_task, audio_in_progress, audio_total_sent
+        nonlocal audio_buffer, audio_flush_task, audio_in_progress, audio_total_sent, audio_bytes_since_commit
         if not audio_buffer or audio_in_progress:
             return
         audio_in_progress = True
@@ -984,31 +994,31 @@ async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
             audio_flush_task.cancel()
             audio_flush_task = None
         logger.info("[client %s] Flushing audio buffer bytes=%d reason=%s", client_id, len(buf), reason)
-        
         try:
-            min_audio_size = 4000  # keep ~250ms
-            if len(buf) < min_audio_size and reason not in ["disconnect", "explicit_commit", "debounce_timeout"]:
-                logger.warning("[client %s] Audio buffer too small (%d bytes), accumulating more. Need at least %d bytes", 
-                             client_id, len(buf), min_audio_size)
-                # Put the data back in buffer for next flush
+            min_audio_size = 2000  # allow smaller internal chunking than commit threshold
+            if len(buf) < min_audio_size and reason not in ["disconnect", "explicit_commit", "debounce_timeout", "finalize"]:
+                # Re-queue bytes
                 audio_buffer = bytearray(buf) + audio_buffer
+                logger.debug("[client %s] Retaining small buffer (%d bytes) for accumulation", client_id, len(buf))
                 return
-            
-            # Send raw chunk to realtime
-            await bridge.send_audio_chunk(buf)
-            # Always commit after a flush to trigger transcription sooner
-            await bridge.commit_audio_buffer()
-            logger.info("[client %s] Audio processed via realtime streaming", client_id)
-            
-            # Reset the accumulation counter
-            audio_total_sent = 0
-            
+
+            sent = await bridge.send_audio_chunk(buf)
+            audio_total_sent += sent
+            audio_bytes_since_commit += sent
+            logger.debug("[client %s] Sent chunk raw=%d since_commit=%d", client_id, sent, audio_bytes_since_commit)
+
+            need_force = reason in ["disconnect", "explicit_commit", "finalize"]
+            if need_force or audio_bytes_since_commit >= MIN_COMMIT_BYTES:
+                await bridge.commit_audio_buffer(force=need_force)
+                audio_bytes_since_commit = 0
+                logger.debug("[client %s] Commit issued (force=%s)", client_id, need_force)
         except Exception as e:
             logger.exception("[client %s] Error processing audio: %s", client_id, e)
-            await ws.send_text(json.dumps({
-                "type": "error", 
-                "error": f"audio_processing_failed: {str(e)}"
-            }))
+            if "buffer too small" not in str(e).lower():
+                await ws.send_text(json.dumps({
+                    "type": "error",
+                    "error": f"audio_processing_failed: {str(e)}"
+                }))
         finally:
             audio_in_progress = False
 
@@ -1018,7 +1028,7 @@ async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
             audio_flush_task.cancel()
         async def _debounced():
             try:
-                await asyncio.sleep(1.2)  # 1.2 seconds to ensure we get enough audio
+                await asyncio.sleep(1.0)
                 await _flush_audio("debounce_timeout")
             except asyncio.CancelledError:
                 pass
@@ -1095,6 +1105,7 @@ async def chat_ws(ws: WebSocket, settings: Settings = Depends(get_settings)):
         if audio_flush_task and not audio_flush_task.done():
             audio_flush_task.cancel()
         try:
+            # Final flush & force commit if anything remains
             await _flush_audio("finalize")
         except Exception:
             pass
