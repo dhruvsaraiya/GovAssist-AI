@@ -39,40 +39,49 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 system_prompt = """
 You are a government services assistant that helps users access official forms and fill them step by step.
 
+🚫 CRITICAL: NEVER USE JSON FORMAT - RESPOND ONLY IN PLAIN TEXT 🚫
+Do not use curly braces { } or JSON structures in any response.
+All responses must be plain conversational text.
+
+🚫 CRITICAL: NEVER INCLUDE INTERNAL MARKERS 🚫
+When producing output, never include <|...|> markers, alignment tags, or diff markers.
+
 RESPONSE MODALITY AND LANGUAGE MATCHING:
 - ALWAYS respond in the SAME LANGUAGE as the user's input (English → English, Hindi → Hindi, etc.)
 - ALWAYS match the user's input modality: Audio input → Audio response, Text input → Text response
 
-AUDIO RESPONSE PROTOCOL (CRITICAL - FOLLOW EXACTLY):
-When user provides AUDIO input, you MUST provide SIMULTANEOUS dual-modality response:
-- AUDIO CONTENT: Natural conversational speech - NO FORM MARKERS SPOKEN ALOUD
-- TEXT CONTENT: Only form markers like ##FORM:aadhaar## or ##FORM_VALUE:value##
+RESPONSE PROTOCOL (CRITICAL - FOLLOW EXACTLY):
+For ALL responses (both audio and text), ALWAYS include conversational content AND form markers in the same response:
 
-NEVER SPEAK FORM MARKERS IN AUDIO - they are backend instructions, not conversation!
+- The backend will automatically separate conversational content from form markers for audio playback
+- Form markers will be processed by backend and never spoken aloud to users
+- Your job is to include BOTH natural conversation AND the appropriate markers
 
-Example for audio input "I need aadhaar":
-- Audio Content (spoken): "I'll help you with your Aadhaar application! Let me open the form for you."
-- Text Content (processed by backend): "##FORM:aadhaar##"
+CRITICAL: YOU MUST NEVER USE JSON FORMAT IN ANY RESPONSE!
 
-TEXT RESPONSE PROTOCOL:
-- For TEXT input: Single response with natural text + form markers together
-- Example: "I'll help you with your Aadhaar! ##FORM:aadhaar##"
+MANDATORY RESPONSE FORMAT:
+ALWAYS respond with plain text only. NO JSON EVER.
+- Format: "[Natural helpful response in user's language] ##MARKER##"
+- Use ##FORM:formname## for form opening
+- Use ##FORM_VALUE:value## for field submissions  
+- Use ##QUESTION_ANSWERED## after answering user questions
 
-Form markers (##FORM:##, ##FORM_VALUE:##, ##QUESTION_ANSWERED##) are BACKEND INSTRUCTIONS ONLY.
+YOU ARE ABSOLUTELY FORBIDDEN FROM USING:
+❌ {"result_text": "message"}
+❌ {"response": "message", "value": "something"}
+❌ Any text that starts with { or ends with }
+❌ Any JSON structure whatsoever
+❌ Any curly braces { } in your responses
 
-AUDIO INPUT/OUTPUT HANDLING:
-- When user provides audio input, respond with SIMULTANEOUS audio and text content
-- CRITICAL: For audio responses, you MUST provide BOTH simultaneously:
-  1. Natural spoken audio for the user to hear (conversational, warm, helpful)
-  2. Text content with ONLY form markers for backend processing (##FORM:##, ##FORM_VALUE:##, ##QUESTION_ANSWERED##)
-- Audio content should be warm, conversational, and natural-sounding
-- Text content should contain ONLY the form markers - do NOT repeat the conversational content
-- Form markers are processed by backend and never spoken aloud
+EVERY RESPONSE MUST BE PLAIN TEXT WITHOUT CURLY BRACES!
 
-AUDIO FORM ACTIVATION EXAMPLES:
-- User audio: "I need aadhaar" → Audio: "I'll help you with your Aadhaar! Let me open the form." + Text: "##FORM:aadhaar##"
-- User audio: "mudra loan" → Audio: "Let's get your Mudra loan application started!" + Text: "##FORM:income##"
-- User audio: "income certificate" → Audio: "I'll help with your income certificate!" + Text: "##FORM:income##"
+CRITICAL FORM ACTIVATION EXAMPLES (MATCH USER'S LANGUAGE):
+- User requests any form → Respond naturally in same language + appropriate ##FORM:formname## marker
+- Hindi request → Hindi response + form marker
+- English request → English response + form marker
+- Mixed language → Respond in primary detected language + form marker
+
+NEVER respond with just conversational text without form markers when forms are requested!
 
 NEVER ask "which form?" - ALWAYS identify the form from context and activate it immediately!
 
@@ -87,19 +96,33 @@ FORM Operations:
    - ANY mention of aadhaar-related services
    
    MUDRA/INCOME FORM TRIGGERS (always respond with ##FORM:income##):
-   - "mudra loan", "PMMY", "Pradhan Mantri Mudra Yojana"
+   - "mudra loan", "मुद्रा लोन", "PMMY", "Pradhan Mantri Mudra Yojana"
    - "business loan", "startup loan", "micro finance"
    - "income certificate", "income proof"
    - "financial assistance", "loan application"
    - ANY business or income-related form requests
 
+   CRITICAL - FORM ACTIVATION RULE:
+   When ANY form is requested, ALWAYS include the appropriate form marker in your response.
+   
+   FORMAT: [Natural conversational response in user's language] + [##FORM:formname##]
+   
+   NEVER respond with just conversational text - ALWAYS include the form marker!
+
    IMPORTANT: If user mentions ANYTHING related to these forms, immediately activate the appropriate form with the marker!
 
-2. FORM FIELD REQUESTS - When you receive "Ask the user: [field prompt]":
+2. FORM FIELD REQUESTS - When you receive a system message asking you to request field information:
+   - RESPOND ONLY IN PLAIN TEXT - NO CURLY BRACES { } ALLOWED
    - Present the field request naturally and conversationally
+   - NEVER EVER use JSON format or any structure with curly braces
    - Explain options clearly if provided
    - Be encouraging and supportive
    - Ask ONLY for the requested field - don't add extra questions
+   
+   Example: When you receive "Now please ask the user for the next field information: Name of the Enterprise"
+   CORRECT Response: "अब मुझे अगला विवरण चाहिए: आपके उद्यम का नाम क्या है?"
+   FORBIDDEN Response: {"result_text": "अब मुझे अगला विवरण चाहिए", "value": "Name of the Enterprise"}
+   FORBIDDEN Response: Any text containing { or }
 
 3. USER RESPONSE PROCESSING - During form filling, intelligently categorize user responses:
 
@@ -133,14 +156,19 @@ CLEAR EXAMPLES FOR ALL CASES:
    Response: "I'll help you with your Aadhaar update. Let me open the form for you. ##FORM:aadhaar##"
 
 2. FORM VALUE RESPONSE (when user provides field data):
+   User: "dhruv"
+   CORRECT Response: "अच्छा, मैंने समझ लिया – आपका नाम है ध्रुव। ##FORM_VALUE:dhruv##"
+   
    User: "dhruv enterprise"
-   Response: "Perfect! ##FORM_VALUE:dhruv enterprise##"
+   CORRECT Response: "Perfect! ##FORM_VALUE:dhruv enterprise##"
    
    User: "my name is john smith"
-   Response: "Thank you! ##FORM_VALUE:john smith##"
-   
-   User: "it would be mumbai"
-   Response: "Great! ##FORM_VALUE:mumbai##"
+   CORRECT Response: "Thank you! ##FORM_VALUE:john smith##"
+
+CRITICAL: NEVER use JSON format in responses!
+   WRONG: {"result_text": "some message"}
+   WRONG: "अच्छा, मैंने समझ लिया – आपका नाम है ध्रुव।" (missing ##FORM_VALUE:##)
+   RIGHT: "अच्छा, मैंने समझ लिया – आपका नाम है ध्रुव। ##FORM_VALUE:dhruv##"
 
 3. QUESTION ANSWERED RESPONSE (when user asks for clarification):
    User: "What does Application Sl. No. mean?"
@@ -550,7 +578,26 @@ class AzureRealtimeBridge:
             return clean_text, True
         return text, False
 
-
+    def _extract_conversational_content_only(self, text: str) -> str:
+        """Extract only the conversational part of the text, removing all form markers.
+        This ensures only natural speech gets converted to audio."""
+        import re
+        
+        # Remove all form markers from the text
+        patterns = [
+            r'##FORM:\w+##',
+            r'##FORM_VALUE:[^#]+##', 
+            r'##QUESTION_ANSWERED##'
+        ]
+        
+        clean_text = text
+        for pattern in patterns:
+            clean_text = re.sub(pattern, '', clean_text, flags=re.IGNORECASE)
+        
+        # Clean up extra whitespace and newlines
+        clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+        
+        return clean_text
 
     def _get_form_url(self, form_name: str) -> str:
         form_urls = {
@@ -657,6 +704,10 @@ class AzureRealtimeBridge:
         clean_text, form_value = self._extract_form_value_from_text(clean_text)
         clean_text, question_answered = self._extract_question_answered_from_text(clean_text)
         
+        # For audio messages, use only the conversational part (before any form markers)
+        # This prevents form markers from being converted to speech
+        audio_content = self._extract_conversational_content_only(text_content)
+        
         if duration_ms:
             logger.info("[azure] Audio response completed in %.2f ms (%s)", duration_ms, event_type)
         
@@ -665,7 +716,7 @@ class AzureRealtimeBridge:
             "message": {
                 "id": message_id,
                 "role": "assistant", 
-                "content": clean_text,
+                "content": audio_content,  # Use only conversational content for audio
                 "type": "audio",
                 "media_uri": f"/{audio_file_path}",  # audio_file_path already has proper format
             },
@@ -680,10 +731,15 @@ class AzureRealtimeBridge:
                 if session and session.current_field:
                     self._form_session_active = True
                     self._awaiting_field_answer = True
+                    # For audio messages, do NOT append field prompt to audio content
+                    # Field prompts will be sent as separate system messages
                     field_prompt = session.get_next_field_prompt()
                     if field_prompt:
-                        clean_text += f"\n\n{field_prompt}"
-                        message_payload["message"]["content"] = clean_text
+                        # Queue field prompt to be sent as system message after this audio response
+                        self._pending_requests.append({
+                            'type': 'field_request',
+                            'field_prompt': field_prompt
+                        })
 
         # Handle question answered and form values (same as text messages)
         if question_answered and self._form_session_active:
@@ -734,6 +790,16 @@ class AzureRealtimeBridge:
         clean_text, form_value = self._extract_form_value_from_text(clean_text)
         clean_text, question_answered = self._extract_question_answered_from_text(clean_text)
         
+        # Debug logging for form detection
+        logger.info(f"[DEBUG] Audio transcript: {transcript}")
+        logger.info(f"[DEBUG] Extracted form_name: {form_name}")
+        logger.info(f"[DEBUG] Extracted form_value: {form_value}")
+        logger.info(f"[DEBUG] Clean text after extraction: {clean_text}")
+                
+        # For audio messages, use only the conversational part (before any form markers)
+        # This prevents form markers from being converted to speech
+        audio_content = self._extract_conversational_content_only(transcript)
+        
         if duration_ms:
             logger.info("[azure] Audio response with data completed in %.2f ms", duration_ms)
         
@@ -762,7 +828,7 @@ class AzureRealtimeBridge:
             "message": {
                 "id": message_id,
                 "role": "assistant", 
-                "content": clean_text,
+                "content": audio_content,  # Use only conversational content for audio
                 "type": "audio",
                 "audio_data": audio_base64,  # Send base64 directly (now in WAV format)
             },
@@ -777,10 +843,15 @@ class AzureRealtimeBridge:
                 if session and session.current_field:
                     self._form_session_active = True
                     self._awaiting_field_answer = True
+                    # For audio messages, do NOT append field prompt to audio content
+                    # Field prompts will be sent as separate system messages
                     field_prompt = session.get_next_field_prompt()
                     if field_prompt:
-                        clean_text += f"\n\n{field_prompt}"
-                        message_payload["message"]["content"] = clean_text
+                        # Queue field prompt to be sent as system message after this audio response
+                        self._pending_requests.append({
+                            'type': 'field_request',
+                            'field_prompt': field_prompt
+                        })
 
         # Handle question answered and form values
         if question_answered and self._form_session_active:
@@ -810,7 +881,12 @@ class AzureRealtimeBridge:
             logger.info(f"[azure] Processing pending request: {request['type']}")
             
             if request['type'] == 'field_request':
-                await self._ask_for_next_field()
+                if 'field_prompt' in request:
+                    # Direct field prompt from audio message handling
+                    await self.send_system_message(f"Now please ask the user for the next field information. Present this field request to the user in a natural and helpful way: {request['field_prompt']}")
+                else:
+                    # Legacy field request
+                    await self._ask_for_next_field()
             elif request['type'] == 'field_request_with_ack':
                 await self._ask_for_next_field_with_acknowledgment(
                     request['completed_value'], 
@@ -868,7 +944,7 @@ class AzureRealtimeBridge:
         if field_prompt:
             # Send the field request directly to the user via the AI
             logger.info(f"[DEBUG] Sending field prompt: {field_prompt}")
-            await self.send_system_message(f"Ask the user: {field_prompt}")
+            await self.send_system_message(f"Now please ask the user for the next field information. Present this field request to the user in a natural and helpful way: {field_prompt}")
             self._awaiting_field_answer = True
 
     async def _ask_for_next_field_with_acknowledgment(self, completed_value: str, completed_field_label: str):
@@ -917,7 +993,7 @@ class AzureRealtimeBridge:
         
         if field_prompt:
             # Combine acknowledgment with next field request
-            combined_message = f"The user provided '{completed_value}' for {completed_field_label}. Acknowledge this briefly and positively, then ask the user: {field_prompt}"
+            combined_message = f"The user provided '{completed_value}' for {completed_field_label}. Acknowledge this briefly and positively, then please ask the user for the next field information in a natural way: {field_prompt}"
             logger.info(f"[DEBUG] Sending combined prompt: {combined_message}")
             await self.send_system_message(combined_message)
             self._awaiting_field_answer = True
