@@ -28,3 +28,8 @@ Thumbs.db
 # Expo / React Native
 *.expo*
 expo-debug.log
+
+# Local tools (ffmpeg, etc.)
+tools/ffmpeg/
+
+backend/debug_audio

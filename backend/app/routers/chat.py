@@ -42,24 +42,37 @@ You are a government services assistant that helps users access official forms a
 RESPONSE MODALITY AND LANGUAGE MATCHING:
 - ALWAYS respond in the SAME LANGUAGE as the user's input (English → English, Hindi → Hindi, etc.)
 - ALWAYS match the user's input modality: Audio input → Audio response, Text input → Text response
-- For AUDIO responses: Speak naturally and conversationally while INCLUDING form markers in text
-- For TEXT responses: Write naturally and conversationally while INCLUDING form markers in text
-- Form markers (##FORM:##, ##FORM_VALUE:##, ##QUESTION_ANSWERED##) are ALWAYS text-based instructions to the backend system, separate from your conversational response
-- Provide natural, conversational responses that feel human and supportive
+
+AUDIO RESPONSE PROTOCOL (CRITICAL - FOLLOW EXACTLY):
+When user provides AUDIO input, you MUST provide SIMULTANEOUS dual-modality response:
+- AUDIO CONTENT: Natural conversational speech - NO FORM MARKERS SPOKEN ALOUD
+- TEXT CONTENT: Only form markers like ##FORM:aadhaar## or ##FORM_VALUE:value##
+
+NEVER SPEAK FORM MARKERS IN AUDIO - they are backend instructions, not conversation!
+
+Example for audio input "I need aadhaar":
+- Audio Content (spoken): "I'll help you with your Aadhaar application! Let me open the form for you."
+- Text Content (processed by backend): "##FORM:aadhaar##"
+
+TEXT RESPONSE PROTOCOL:
+- For TEXT input: Single response with natural text + form markers together
+- Example: "I'll help you with your Aadhaar! ##FORM:aadhaar##"
+
+Form markers (##FORM:##, ##FORM_VALUE:##, ##QUESTION_ANSWERED##) are BACKEND INSTRUCTIONS ONLY.
 
 AUDIO INPUT/OUTPUT HANDLING:
-- When user provides audio input, respond with natural speech audio AND text content
-- CRITICAL: For audio responses, you MUST provide BOTH:
-  1. Natural spoken audio for the user to hear
-  2. Text content with form markers for backend processing
-- Audio responses should be warm, conversational, and natural-sounding
-- Text content should include the same message PLUS form markers (##FORM:##, ##FORM_VALUE:##, ##QUESTION_ANSWERED##)
+- When user provides audio input, respond with SIMULTANEOUS audio and text content
+- CRITICAL: For audio responses, you MUST provide BOTH simultaneously:
+  1. Natural spoken audio for the user to hear (conversational, warm, helpful)
+  2. Text content with ONLY form markers for backend processing (##FORM:##, ##FORM_VALUE:##, ##QUESTION_ANSWERED##)
+- Audio content should be warm, conversational, and natural-sounding
+- Text content should contain ONLY the form markers - do NOT repeat the conversational content
 - Form markers are processed by backend and never spoken aloud
 
 AUDIO FORM ACTIVATION EXAMPLES:
-- User audio: "I need aadhaar" → Audio: "I'll help you with your Aadhaar! Let me open the form." + Text: "I'll help you with your Aadhaar! Let me open the form. ##FORM:aadhaar##"
-- User audio: "mudra loan" → Audio: "Let's get your Mudra loan application started!" + Text: "Let's get your Mudra loan application started! ##FORM:income##"
-- User audio: "income certificate" → Audio: "I'll help with your income certificate!" + Text: "I'll help with your income certificate! ##FORM:income##"
+- User audio: "I need aadhaar" → Audio: "I'll help you with your Aadhaar! Let me open the form." + Text: "##FORM:aadhaar##"
+- User audio: "mudra loan" → Audio: "Let's get your Mudra loan application started!" + Text: "##FORM:income##"
+- User audio: "income certificate" → Audio: "I'll help with your income certificate!" + Text: "##FORM:income##"
 
 NEVER ask "which form?" - ALWAYS identify the form from context and activate it immediately!
 
@@ -278,17 +291,34 @@ class AzureRealtimeBridge:
 
         logger.info("[azure] Connected (%.2f ms)", (time.perf_counter() - connect_started) * 1000)
 
-        # Configure session (with audio support)
+        # Configure session for GPT-4 Realtime API
+        # Reference: https://platform.openai.com/docs/guides/realtime
         session_cfg = {
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
                 "tool_choice": "none",
-                "voice": "alloy",  # Default voice for audio responses
-                "input_audio_format": "pcm16",  # 16-bit PCM at 24kHz
-                "output_audio_format": "pcm16",  # 16-bit PCM at 24kHz
+                "voice": "alloy",  # Available: alloy, echo, fable, onyx, nova, shimmer
+                # CRITICAL: GPT-4 Realtime API audio format requirements
+                "input_audio_format": "pcm16",   # 16-bit PCM, 24kHz, mono, little-endian
+                "output_audio_format": "pcm16",  # 16-bit PCM, 24kHz, mono, little-endian
+                "turn_detection": {
+                    "type": "server_vad",         # Server-side Voice Activity Detection
+                    "threshold": 0.5,             # VAD sensitivity (0.0-1.0, higher = less sensitive)
+                    "prefix_padding_ms": 300,     # Audio before speech starts (ms)
+                    "silence_duration_ms": 800,   # Silence duration before stopping (ms)
+                },
+                "input_audio_transcription": {
+                    "model": "whisper-1"          # Whisper model for transcription
+                },
             },
         }
+        
+        logger.info(f"🔧 [azure] Configuring session:")
+        logger.info(f"   🎤 Input format: {session_cfg['session']['input_audio_format']}")
+        logger.info(f"   🔊 Output format: {session_cfg['session']['output_audio_format']}")
+        logger.info(f"   🗣️  Voice: {session_cfg['session']['voice']}")
+        logger.info(f"   🎯 VAD threshold: {session_cfg['session']['turn_detection']['threshold']}")
         logger.info("[azure->] session.update: %s", json.dumps(session_cfg, ensure_ascii=False))
         await self.ws.send(json.dumps(session_cfg))  # type: ignore
 
@@ -328,7 +358,7 @@ class AzureRealtimeBridge:
         etype = event.get("type")
         response_id = event.get("response_id")
         logger.info("[azure<-event] type=%s keys=%s", etype, list(event.keys()))
-
+        
         if response_id and response_id != self._current_response_id:
             self._current_response_id = response_id
             self._response_sent = False
@@ -400,13 +430,37 @@ class AzureRealtimeBridge:
                 self._ai_responding = False
                 await self._process_pending_requests()
 
-        elif etype == "error":
-            err_msg = event.get("error", {}).get("message", "unknown_error")
-            logger.error("[azure] Error event: %s", err_msg)
-            await self._emit_frontend({"type": "error", "error": err_msg})
+        elif etype == "conversation.item.created" and event.get("item", {}).get("type") == "message":
+            # Check if this item has audio content with transcription
+            item = event.get("item", {})
+            content = item.get("content", [])
+            for content_part in content:
+                if content_part.get("type") == "input_audio":
+                    transcript = content_part.get("transcript", None)
+                    logger.info("[azure] 🎤💬 Audio message created with transcript: '%s'", transcript)
+                    
         else:
             logger.debug("[azure] Ignored event type: %s", etype)
         return
+
+    def _clean_event_for_logging(self, event: dict) -> dict:
+        """Remove large base64 audio data from events for cleaner logging"""
+        import copy
+        clean_event = copy.deepcopy(event)
+        
+        def clean_recursive(obj):
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if key in ["audio", "delta"] and isinstance(value, str) and len(value) > 100:
+                        obj[key] = f"<base64_data_{len(value)}_chars>"
+                    else:
+                        clean_recursive(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    clean_recursive(item)
+        
+        clean_recursive(clean_event)
+        return clean_event
 
     def _calculate_response_duration(self) -> Optional[float]:
         if self._last_request_started is not None:
@@ -764,6 +818,10 @@ class AzureRealtimeBridge:
                 )
             elif request['type'] == 'system_message':
                 await self.send_system_message(request['content'])
+            elif request['type'] == 'user_audio_message':
+                await self.send_user_audio_message(request['audio_data'])
+            elif request['type'] == 'user_text_message':
+                await self.send_user_message(request['content'])
 
     async def _delayed_field_request(self):
         """Delay the field request to allow form activation response to complete first."""
@@ -979,19 +1037,225 @@ class AzureRealtimeBridge:
             self._ai_responding = True
 
     def _process_audio_data(self, audio_data: str) -> Optional[str]:
-        """Process base64 audio data for GPT-realtime"""
+        """Process base64 audio data for GPT-realtime.
+        
+        GPT-4 Realtime API expects:
+        - Raw PCM 16-bit data (no WAV headers)
+        - Base64 encoded
+        - 24kHz sample rate, mono channel
+        
+        This function ensures we always return base64-encoded raw PCM data.
+        """
         try:
             # Validate base64 data
             if not audio_data:
-                logger.error("Empty audio data provided")
+                logger.error("❌ Empty audio data provided")
                 return None
                 
-            # Test decode to validate base64
-            decoded_data = base64.b64decode(audio_data)
-            logger.info(f"Processed audio data, size: {len(decoded_data)} bytes")
-            return audio_data
+            # Test base64 decoding
+            try:
+                decoded_data = base64.b64decode(audio_data)
+            except Exception as decode_error:
+                logger.error(f"❌ Invalid base64 audio data: {decode_error}")
+                return None
+                
+            logger.info(f"🎵 Processing audio: {len(audio_data)} base64 chars -> {len(decoded_data)} bytes")
+            
+            # Helper: parse WAV header robustly (support extra chunks)
+            def _parse_wav(wav_bytes: bytes):
+                if len(wav_bytes) < 44 or not wav_bytes.startswith(b'RIFF') or wav_bytes[8:12] != b'WAVE':
+                    return None
+                # Iterate chunks starting at byte 12
+                offset = 12
+                fmt_chunk = None
+                data_chunk = None
+                while offset + 8 <= len(wav_bytes):
+                    chunk_id = wav_bytes[offset:offset+4]
+                    chunk_size = int.from_bytes(wav_bytes[offset+4:offset+8], 'little', signed=False)
+                    next_offset = offset + 8 + chunk_size
+                    if chunk_id == b'fmt ':
+                        fmt_chunk = wav_bytes[offset+8:offset+8+chunk_size]
+                    elif chunk_id == b'data':
+                        data_chunk = (offset+8, chunk_size)
+                        # We can break after finding data, but continue just in case (keep first occurrence)
+                        break
+                    offset = next_offset
+                if not fmt_chunk or not data_chunk:
+                    return None
+                # Parse fmt chunk (PCM expected)
+                if len(fmt_chunk) < 16:
+                    return None
+                audio_format = int.from_bytes(fmt_chunk[0:2], 'little')
+                channels = int.from_bytes(fmt_chunk[2:4], 'little')
+                sample_rate = int.from_bytes(fmt_chunk[4:8], 'little')
+                bits_per_sample = int.from_bytes(fmt_chunk[14:16], 'little')
+                data_offset, data_size = data_chunk
+                pcm_bytes = wav_bytes[data_offset:data_offset+data_size]
+                return {
+                    'audio_format': audio_format,
+                    'channels': channels,
+                    'sample_rate': sample_rate,
+                    'bits_per_sample': bits_per_sample,
+                    'pcm': pcm_bytes
+                }
+
+            # Helper: simple linear resample 16-bit mono PCM
+            def _resample_pcm_16le_mono(pcm: bytes, orig_rate: int, target_rate: int = 24000) -> bytes:
+                if orig_rate == target_rate:
+                    return pcm
+                if orig_rate <= 0:
+                    return pcm
+                import math
+                sample_count = len(pcm) // 2
+                if sample_count == 0:
+                    return pcm
+                # Unpack samples
+                samples = struct.unpack('<' + 'h'*sample_count, pcm)
+                ratio = target_rate / orig_rate
+                new_count = max(1, int(math.floor(sample_count * ratio)))
+                resampled = []
+                for i in range(new_count):
+                    # Source position
+                    src_pos = i / ratio
+                    s0 = int(math.floor(src_pos))
+                    s1 = min(s0 + 1, sample_count - 1)
+                    frac = src_pos - s0
+                    v0 = samples[s0]
+                    v1 = samples[s1]
+                    interp = int(v0 + (v1 - v0) * frac)
+                    # Clamp just in case
+                    if interp > 32767: interp = 32767
+                    if interp < -32768: interp = -32768
+                    resampled.append(interp)
+                return struct.pack('<' + 'h'*len(resampled), *resampled)
+
+            # Helper: transcode compressed / container audio (e.g., 3gp/mp4/aac) -> raw pcm16 using ffmpeg if available
+            def _ffmpeg_transcode_to_pcm16(container_bytes: bytes) -> Optional[bytes]:
+                try:
+                    import shutil, subprocess
+                    if not shutil.which('ffmpeg'):
+                        logger.error("❌ ffmpeg not found on PATH; cannot transcode container audio to PCM16")
+                        return None
+                    # Invoke ffmpeg: input from stdin, output s16le mono 24kHz to stdout
+                    proc = subprocess.run(
+                        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", "pipe:0", "-f", "s16le", "-ac", "1", "-ar", "24000", "pipe:1"],
+                        input=container_bytes,
+                        capture_output=True,
+                        check=False
+                    )
+                    if proc.returncode != 0:
+                        logger.error(f"❌ ffmpeg transcode failed (code {proc.returncode}): {proc.stderr.decode('utf-8', 'ignore')[:200]}")
+                        return None
+                    pcm_out = proc.stdout
+                    if not pcm_out:
+                        logger.error("❌ ffmpeg produced empty output")
+                        return None
+                    logger.info(f"✅ ffmpeg transcoded container audio -> {len(pcm_out)} bytes PCM16 @24kHz")
+                    return pcm_out
+                except Exception as e:
+                    logger.error(f"❌ ffmpeg transcode exception: {e}")
+                    return None
+
+            # Detect MP4/3GP/ISO BMFF container (bytes 4:8 == 'ftyp') or '....ftyp'
+            if len(decoded_data) >= 12 and decoded_data[4:8] == b'ftyp':
+                logger.info("🎞️ Detected ISO-BMFF/MP4/3GP container (ftyp) - attempting ffmpeg transcode to PCM16")
+                transcoded = _ffmpeg_transcode_to_pcm16(decoded_data)
+                if transcoded:
+                    if len(transcoded) < 1000:
+                        logger.warning(f"⚠️ Transcoded PCM very small: {len(transcoded)} bytes")
+                    processed_base64 = base64.b64encode(transcoded).decode('utf-8')
+                    logger.info(f"✅ Prepared base64 PCM payload (from container) size: {len(processed_base64)} chars")
+                    return processed_base64
+                else:
+                    logger.error("❌ Could not transcode container audio; aborting audio send")
+                    return None
+
+            # Detect possible AAC ADTS (0xFFF syncword)
+            if len(decoded_data) > 4 and decoded_data[0] == 0xFF and (decoded_data[1] & 0xF0) == 0xF0:
+                logger.info("🎞️ Detected probable AAC ADTS stream - attempting ffmpeg transcode to PCM16")
+                transcoded = _ffmpeg_transcode_to_pcm16(decoded_data)
+                if transcoded:
+                    if len(transcoded) < 1000:
+                        logger.warning(f"⚠️ Transcoded PCM very small: {len(transcoded)} bytes")
+                    processed_base64 = base64.b64encode(transcoded).decode('utf-8')
+                    logger.info(f"✅ Prepared base64 PCM payload (from AAC) size: {len(processed_base64)} chars")
+                    return processed_base64
+                else:
+                    logger.error("❌ Could not transcode AAC audio; aborting audio send")
+                    return None
+
+            # Check if this is WAV data (starts with 'RIFF')
+            if decoded_data.startswith(b'RIFF'):
+                logger.info("🎵 Detected WAV format; parsing header & extracting PCM")
+                wav_info = _parse_wav(decoded_data)
+                if not wav_info:
+                    logger.error("❌ Failed to parse WAV structure; falling back to naive header skip")
+                    if len(decoded_data) < 44:
+                        return None
+                    pcm_data = decoded_data[44:]
+                    sample_rate = 24000
+                    channels = 1
+                    bits = 16
+                else:
+                    sample_rate = wav_info['sample_rate']
+                    channels = wav_info['channels']
+                    bits = wav_info['bits_per_sample']
+                    pcm_data = wav_info['pcm']
+                logger.info(f"🔍 WAV meta -> sr={sample_rate}Hz channels={channels} bits={bits} pcm_bytes={len(pcm_data)}")
+
+                if bits != 16:
+                    logger.error(f"⚠️ Unexpected bits_per_sample {bits}; only 16-bit PCM supported")
+                    return None
+                if channels != 1:
+                    logger.info(f"🔁 Downmixing from {channels} channels to mono")
+                    # Naive downmix: average channels
+                    frame_count = len(pcm_data) // (2 * channels)
+                    mono_frames = []
+                    for i in range(frame_count):
+                        acc = 0
+                        for c in range(channels):
+                            start = (i * channels + c) * 2
+                            sample = struct.unpack('<h', pcm_data[start:start+2])[0]
+                            acc += sample
+                        mono_val = int(acc / channels)
+                        mono_frames.append(mono_val)
+                    pcm_data = struct.pack('<' + 'h'*len(mono_frames), *mono_frames)
+                    channels = 1
+                    logger.info(f"✅ Downmixed to mono -> {len(pcm_data)} bytes")
+
+                # Resample if needed
+                if sample_rate != 24000:
+                    logger.info(f"🔄 Resampling from {sample_rate}Hz to 24000Hz")
+                    before = len(pcm_data)
+                    pcm_data = _resample_pcm_16le_mono(pcm_data, sample_rate, 24000)
+                    logger.info(f"✅ Resampled PCM bytes: {before} -> {len(pcm_data)}")
+                else:
+                    logger.info("✅ Sample rate already 24000Hz; no resample required")
+
+                if len(pcm_data) < 1000:
+                    logger.warning(f"⚠️ PCM data seems very small: {len(pcm_data)} bytes (may be silence or very short)")
+
+                processed_base64 = base64.b64encode(pcm_data).decode('utf-8')
+                logger.info(f"✅ Prepared base64 PCM payload size: {len(processed_base64)} chars")
+                return processed_base64
+                
+            else:
+                logger.info("🎵 Data appears to be raw PCM format")
+                
+                # Validate PCM data size
+                if len(decoded_data) < 1000:
+                    logger.warning(f"⚠️  PCM data seems very small: {len(decoded_data)} bytes")
+                
+                # Data is already raw PCM, but ensure it's properly base64 encoded
+                # Re-encode to ensure consistent base64 format
+                processed_base64 = base64.b64encode(decoded_data).decode('utf-8')
+                logger.info(f"✅ Re-encoded PCM to base64: {len(processed_base64)} chars")
+                return processed_base64
+                
         except Exception as e:
-            logger.error(f"Failed to process audio data: {e}")
+            logger.error(f"❌ Failed to process audio data: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return None
 
     def _pcm_to_wav(self, pcm_data: bytes, sample_rate: int = 24000, channels: int = 1, bits_per_sample: int = 16) -> bytes:
@@ -1025,19 +1289,131 @@ class AzureRealtimeBridge:
             logger.error(f"Failed to convert PCM to WAV: {e}")
             return pcm_data  # Return original data as fallback
 
+    async def _debug_save_audio(self, audio_base64: str, prefix: str = "debug"):
+        """Save audio to debug directory for manual verification and convert PCM to WAV"""
+        try:
+            # Create debug directory
+            debug_dir = "debug_audio"
+            os.makedirs(debug_dir, exist_ok=True)
+            
+            # Decode audio data
+            audio_bytes = base64.b64decode(audio_base64)
+            timestamp = int(time.time())
+            
+            logger.info(f"[DEBUG] 🎵 Processing {prefix}: {len(audio_base64)} base64 chars -> {len(audio_bytes)} bytes")
+            
+            # Always save raw binary data first
+            raw_filename = f"{prefix}_{timestamp}_raw.bin"
+            raw_path = os.path.join(debug_dir, raw_filename)
+            with open(raw_path, 'wb') as f:
+                f.write(audio_bytes)
+            logger.info(f"[DEBUG] 📁 Saved raw binary: {raw_path}")
+            
+            # Check if this is already a WAV file (starts with 'RIFF')
+            if audio_bytes.startswith(b'RIFF'):
+                logger.info(f"[DEBUG] 🎵 Detected WAV format")
+                # Save WAV file for debugging
+                wav_filename = f"{prefix}_{timestamp}_original.wav"
+                wav_path = os.path.join(debug_dir, wav_filename)
+                with open(wav_path, 'wb') as f:
+                    f.write(audio_bytes)
+                logger.info(f"[DEBUG] 🎵 Saved original WAV: {wav_path}")
+                
+                # Extract and save raw PCM for comparison
+                if len(audio_bytes) > 44:
+                    pcm_data = audio_bytes[44:]  # Skip WAV header
+                    pcm_filename = f"{prefix}_{timestamp}_extracted.pcm"
+                    pcm_path = os.path.join(debug_dir, pcm_filename)
+                    with open(pcm_path, 'wb') as f:
+                        f.write(pcm_data)
+                    
+                    # Convert extracted PCM back to WAV for verification
+                    wav_from_pcm = self._pcm_to_wav(pcm_data)
+                    wav_from_pcm_filename = f"{prefix}_{timestamp}_pcm_to_wav.wav"
+                    wav_from_pcm_path = os.path.join(debug_dir, wav_from_pcm_filename)
+                    with open(wav_from_pcm_path, 'wb') as f:
+                        f.write(wav_from_pcm)
+                    
+                    logger.info(f"[DEBUG] 🎵 Extracted PCM ({len(pcm_data)} bytes): {pcm_path}")
+                    logger.info(f"[DEBUG] 🎵 PCM converted to WAV: {wav_from_pcm_path}")
+                    
+                    # Calculate expected duration
+                    duration_seconds = len(pcm_data) / (24000 * 2)  # 24kHz, 16-bit
+                    logger.info(f"[DEBUG] ⏱️  Expected duration: {duration_seconds:.2f} seconds")
+                    
+            else:
+                logger.info(f"[DEBUG] 🎵 Treating as raw PCM format")
+                # Save raw PCM data
+                pcm_filename = f"{prefix}_{timestamp}.pcm"
+                pcm_path = os.path.join(debug_dir, pcm_filename)
+                with open(pcm_path, 'wb') as f:
+                    f.write(audio_bytes)
+                
+                # Convert PCM to WAV for easier playback and verification
+                wav_data = self._pcm_to_wav(audio_bytes)
+                wav_filename = f"{prefix}_{timestamp}_pcm_to_wav.wav"
+                wav_path = os.path.join(debug_dir, wav_filename)
+                with open(wav_path, 'wb') as f:
+                    f.write(wav_data)
+                    
+                # Calculate expected duration
+                duration_seconds = len(audio_bytes) / (24000 * 2)  # 24kHz, 16-bit
+                logger.info(f"[DEBUG] 🎵 Saved raw PCM: {pcm_path}")
+                logger.info(f"[DEBUG] 🎵 Converted to WAV: {wav_path}")
+                logger.info(f"[DEBUG] ⏱️  Expected duration: {duration_seconds:.2f} seconds")
+                logger.info(f"[DEBUG] 🎧 Play with: ffplay -f s16le -ar 24000 -ac 1 {pcm_path}")
+            
+            logger.info(f"[DEBUG] 🎧 Play WAV file: {os.path.abspath(wav_path) if 'wav_path' in locals() else 'N/A'}")
+            
+        except Exception as e:
+            logger.error(f"[DEBUG] ❌ Failed to save debug audio: {e}")
+            import traceback
+            logger.error(f"[DEBUG] ❌ Traceback: {traceback.format_exc()}")
+
     async def send_user_audio_message(self, audio_data: str):
         """Send user audio message to Azure Realtime API"""
         logger.info(f"[DEBUG] send_user_audio_message called with audio data size: {len(audio_data)} chars")
         
-        # Don't send new messages while AI is responding
+        # DEBUG: Save raw audio_data from frontend FIRST
+        await self._debug_save_audio(audio_data, "raw_from_frontend")
+        
+        # If AI is currently responding, queue the audio message
         if self._ai_responding:
-            logger.warning(f"[azure] Ignoring user audio message while AI is responding")
+            logger.info(f"[azure] Queuing user audio message (AI busy)")
+            self._pending_requests.append({
+                'type': 'user_audio_message', 
+                'audio_data': audio_data
+            })
             return
             
         # Process the audio data
         processed_audio = self._process_audio_data(audio_data)
         if not processed_audio:
             logger.error("Failed to process audio data")
+            return
+        
+        # DEBUG: Save processed audio for verification
+        await self._debug_save_audio(processed_audio, "user_input_processed")
+        
+        # Verify processed audio size and format for GPT-4 Realtime API
+        try:
+            processed_bytes = base64.b64decode(processed_audio)
+            duration_seconds = len(processed_bytes) / (24000 * 2)  # 24kHz, 16-bit PCM
+            logger.info(f"🚀 [azure] Sending to GPT-4 Realtime API:")
+            logger.info(f"   📊 Raw PCM: {len(processed_bytes)} bytes")
+            logger.info(f"   📊 Base64: {len(processed_audio)} chars")
+            logger.info(f"   ⏱️  Duration: ~{duration_seconds:.2f} seconds")
+            logger.info(f"   🎵 Format: 16-bit PCM, 24kHz, mono")
+            # Silence detection (simple): check first 2k samples variance
+            if len(processed_bytes) >= 4000:
+                import struct as _struct
+                sample_ct = min(len(processed_bytes)//2, 2000)
+                samples = _struct.unpack('<' + 'h'*sample_ct, processed_bytes[:sample_ct*2])
+                max_amp = max(abs(s) for s in samples) if samples else 0
+                if max_amp < 50:  # near silence threshold
+                    logger.warning(f"🤫 Detected near-silence audio (max amplitude {max_amp}); check recording pipeline")
+        except Exception as verify_error:
+            logger.error(f"❌ Failed to verify processed audio: {verify_error}")
             return
         
         async with self._lock:
@@ -1047,6 +1423,7 @@ class AzureRealtimeBridge:
             self._last_request_started = time.perf_counter()
 
             # 1. Create conversation item (user audio message)
+            # GPT-4 Realtime API expects: "audio" field with base64-encoded raw PCM data
             create_item = {
                 "type": "conversation.item.create",
                 "item": {
@@ -1054,20 +1431,23 @@ class AzureRealtimeBridge:
                     "role": "user",
                     "content": [{
                         "type": "input_audio", 
-                        "audio": processed_audio
+                        "audio": processed_audio  # Base64-encoded raw PCM 16-bit data
                     }],
                 },
             }
+            logger.info(f"🚀 [azure->] conversation.item.create")
+            logger.info(f"   📤 Sending audio content: {len(processed_audio)} base64 chars")
             await self.ws.send(json.dumps(create_item))  # type: ignore
 
-            # 2. Request a response with audio modality
+            # 2. Request both audio and text response in single request
             response_req = {
                 "type": "response.create",
                 "response": {
-                    "modalities": ["text", "audio"],
-                    "conversation": "auto",
+                    "modalities": ["audio", "text"],
+                    "instructions": "Provide a natural conversational audio response for the user. In the text output, only include form markers (like ##FORM:formname##) and form-related instructions - do not repeat the conversational content in text.",
                 },
             }
+            logger.info("[azure->] response.create (requesting audio + text)")
             await self.ws.send(json.dumps(response_req))  # type: ignore
             self._ai_responding = True
 
@@ -1085,9 +1465,13 @@ class AzureRealtimeBridge:
         else:
             logger.info(f"[DEBUG] Not in form filling mode, sending to AI")
         
-        # Don't send new messages while AI is responding
+        # If AI is currently responding, queue the text message
         if self._ai_responding:
-            logger.warning(f"[azure] Ignoring user message while AI is responding: {content[:50]}...")
+            logger.info(f"[azure] Queuing user text message (AI busy): {content[:50]}...")
+            self._pending_requests.append({
+                'type': 'user_text_message', 
+                'content': content
+            })
             return
         
         async with self._lock:

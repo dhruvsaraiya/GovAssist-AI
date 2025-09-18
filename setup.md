@@ -40,6 +40,24 @@ uvicorn app.main:app --reload --port 8000
 ```
 Visit: http://127.0.0.1:8000/docs
 
+### (Optional) Audio Transcoding (ffmpeg)
+Realtime audio handling will transcode container/compressed recordings (e.g. 3GP/MP4 from Android) to 16‑bit PCM using `ffmpeg` if present. Install locally with the provided scripts (does not require admin, installs into `tools/ffmpeg`).
+
+Windows (PowerShell):
+```
+pwsh -File scripts/install_ffmpeg.ps1 -UseSession
+```
+Linux / macOS:
+```
+bash scripts/install_ffmpeg.sh
+source tools/ffmpeg/PATH_ADD.txt   # or add the export line to your shell profile
+```
+Verify:
+```
+tools/ffmpeg/**/bin/ffmpeg -version
+```
+If not installed, the backend will log a warning and cannot transcode non‑WAV inputs.
+
 ### Realtime Model (Azure OpenAI)
 Keyless auth (recommended):
 ```

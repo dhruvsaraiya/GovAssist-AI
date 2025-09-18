@@ -1,5 +1,6 @@
 import { BACKEND_HOST, BACKEND_PORT } from '../config';
 import { ChatMessage } from '../types/chat';
+import * as FileSystem from 'expo-file-system';
 
 export type WSState = 'connecting' | 'open' | 'closed';
 
@@ -182,17 +183,41 @@ export class ChatWebSocket {
     }
 
     try {
-      // Convert blob URI to base64 data
-      const response = await fetch(audioUri);
-      const blob = await response.blob();
-      const arrayBuffer = await blob.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+      // Basic file info for debugging
+      try {
+        const info = await FileSystem.getInfoAsync(audioUri, { size: true });
+        if (!info.exists) {
+          console.warn('[ws] Audio file does not exist at URI:', audioUri);
+        } else {
+          console.log('[ws] Audio file size bytes:', info.size);
+          if ((info.size || 0) === 0) {
+            throw new Error('Recorded audio file is empty (0 bytes)');
+          }
+        }
+      } catch (fiErr) {
+        console.warn('[ws] Could not stat audio file:', fiErr);
+      }
+      // Use expo-file-system to read the audio file as base64 directly
+      const base64 = await FileSystem.readAsStringAsync(audioUri, { 
+        encoding: FileSystem.EncodingType.Base64 
+      });
       
+      console.log('[ws] Sending audio message (', base64.length, 'chars)');
+      if (base64.length > 16) {
+        console.log('[ws] Audio base64 head:', base64.slice(0, 16));
+      }
+      
+      if (!base64 || base64.length === 0) {
+        throw new Error('Empty audio data - recording may have failed');
+      }
+      
+      // Send without logging the full base64 payload
       this.ws.send(JSON.stringify({ 
         type: 'user_audio_message', 
         audio_data: base64
       }));
     } catch (error) {
+      console.error('[ws] Audio processing error:', error);
       this.listeners.onError?.('Failed to process audio: ' + String(error));
     }
   }

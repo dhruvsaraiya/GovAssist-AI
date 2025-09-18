@@ -105,7 +105,7 @@ export const ChatScreen: React.FC = () => {
         });
       },
       onAudioMessage: (m) => {
-        console.log('[audio message received]', m);
+        console.log('[audio message received] id:', m.id, 'content:', m.content?.substring(0, 50) + '...', 'audioData:', m.audio_data ? `${m.audio_data.length} chars` : 'none');
         setMessages(prev => {
           const msg: ChatMessage = { 
             id: m.id || 'audio-' + Date.now(), 
@@ -234,22 +234,89 @@ export const ChatScreen: React.FC = () => {
 
   const startRecording = useCallback(async () => {
     try {
+      console.log('[Audio] Requesting permissions...');
       const perm = await Audio.requestPermissionsAsync();
-      if (!perm.granted) { Alert.alert('Permission required', 'Microphone permission is needed'); return; }
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      console.log('[Audio] Permission result:', perm);
+      if (!perm.granted) { 
+        Alert.alert('Permission required', 'Microphone permission is needed'); 
+        return; 
+      }
+      
+      console.log('[Audio] Setting audio mode...');
+      await Audio.setAudioModeAsync({ 
+        allowsRecordingIOS: true, 
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
+      
+      // Record in WAV format to ensure compatibility across platforms
+      // Backend will extract raw PCM data for GPT-4 Realtime API
+      const recordingOptions = {
+        android: {
+          extension: '.wav',
+          outputFormat: Audio.AndroidOutputFormat.DEFAULT,
+          audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
+          sampleRate: 24000,
+          numberOfChannels: 1,
+          bitRate: 384000,
+        },
+        ios: {
+          extension: '.wav',
+          outputFormat: Audio.IOSOutputFormat.LINEARPCM,
+          audioQuality: Audio.IOSAudioQuality.HIGH,
+          sampleRate: 24000,
+          numberOfChannels: 1,
+          bitRate: 384000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+        },
+        web: {
+          extension: '.wav',
+          mimeType: 'audio/wav',
+        }
+      };
+      
+      console.log('[Audio] Creating recording with options:', recordingOptions);
+      const { recording } = await Audio.Recording.createAsync(recordingOptions);
+      console.log('[Audio] Recording created successfully');
       setRecording(recording);
     } catch (e) {
-      Alert.alert('Error', 'Could not start recording');
+      console.error('[Audio] Recording start error:', e);
+      Alert.alert('Error', `Could not start recording: ${String(e)}`);
     }
   }, []);
 
   const stopRecording = useCallback(async () => {
-    if (!recording) return;
+    if (!recording) {
+      console.log('[Audio] No recording to stop');
+      return;
+    }
     try {
+      console.log('[Audio] Stopping recording...');
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
-      if (!uri) return;
+      console.log('[Audio] Recording URI:', uri);
+      if (!uri) {
+        console.error('[Audio] No URI returned from recording');
+        Alert.alert('Error', 'Recording failed - no audio data');
+        return;
+      }
+      // Debug: inspect file size & first bytes
+      try {
+        const info: any = await FileSystem.getInfoAsync(uri, { size: true } as any);
+        console.log('[Audio] File exists:', info.exists, 'size:', info.size, 'uri:', info.uri);
+        const fsize = typeof info.size === 'number' ? info.size : -1;
+        if (fsize === 0) {
+          console.warn('[Audio] Recorded file size is 0 bytes');
+        } else if (fsize > 0) {
+          const headBase64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+          console.log('[Audio] Base64 length:', headBase64.length, 'head:', headBase64.slice(0, 24));
+        }
+      } catch (headErr) {
+        console.warn('[Audio] Could not read audio head:', headErr);
+      }
       
       // Add user's audio message to chat
       setMessages(prev => [...prev, { 
