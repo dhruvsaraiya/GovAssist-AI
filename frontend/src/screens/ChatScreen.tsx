@@ -28,6 +28,23 @@ export const ChatScreen: React.FC = () => {
   const [activeFormMapping, setActiveFormMapping] = useState<Record<string, any> | null>(null);
   const [formProgress, setFormProgress] = useState<any>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
+  // Track whether we should auto-scroll (disabled if user scrolls up)
+  const autoScrollRef = useRef(true);
+
+  const scrollToBottom = useCallback((animated: boolean = true) => {
+    requestAnimationFrame(() => {
+      try {
+        (listRef.current as any)?.scrollToEnd?.({ animated });
+      } catch (e) {
+        // Fallback: scroll to last index (some platforms / RN versions)
+        try {
+          if (messages.length > 0) {
+            listRef.current?.scrollToIndex({ index: messages.length - 1, animated });
+          }
+        } catch {/* ignore */}
+      }
+    });
+  }, [messages]);
   const formWebViewRef = useRef<any>(null);
 
   const appendBackendMessages = (resp: BackendChatResponse) => {
@@ -70,7 +87,8 @@ export const ChatScreen: React.FC = () => {
         else setActiveFormMapping(null);
       } catch (e) { setActiveFormMapping(null); }
     }
-    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
+    // Attempt scroll after new backend messages
+    scrollToBottom(true);
   };
 
   // Initialize websocket once
@@ -84,10 +102,12 @@ export const ChatScreen: React.FC = () => {
             streamingMsgRef.current = msg;
             return [...prev, msg];
           } else {
+            // Mutate existing streaming message content, trigger re-render by cloning array
             streamingMsgRef.current.content += delta;
             return [...prev];
           }
         });
+        if (autoScrollRef.current) scrollToBottom(false);
       },
       onAssistantMessage: (m) => {
         setMessages(prev => {
@@ -98,6 +118,7 @@ export const ChatScreen: React.FC = () => {
           const msg: ChatMessage = { id: m.id || 'assistant-' + Date.now(), role: 'assistant', content: m.content, createdAt: Date.now(), type: 'text', formUrl: m.form_url || undefined };
           return [...prev, msg];
         });
+        if (autoScrollRef.current) scrollToBottom(true);
       },
       onFormOpen: (url) => {
         setActiveFormUrl(url);
@@ -212,6 +233,11 @@ export const ChatScreen: React.FC = () => {
 
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
 
+  // Scroll when a new (non-stream-delta) message is added and user is at bottom
+  useEffect(() => {
+    if (autoScrollRef.current) scrollToBottom(true);
+  }, [messages, scrollToBottom]);
+
   const startRecording = useCallback(async () => {
     try {
       const perm = await Audio.requestPermissionsAsync();
@@ -278,7 +304,20 @@ export const ChatScreen: React.FC = () => {
           keyExtractor={m => m.id}
           renderItem={({ item }) => <MessageBubble message={item} />}
           contentContainerStyle={styles.listContent}
-          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+          onContentSizeChange={() => { if (autoScrollRef.current) scrollToBottom(true); }}
+          onScroll={(e) => {
+            const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+            const padding = 24; // threshold
+            const atBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - padding;
+            autoScrollRef.current = atBottom;
+          }}
+          scrollEventThrottle={80}
+          onScrollToIndexFailed={(info) => {
+            // Wait for more items to render then retry
+            setTimeout(() => {
+              try { listRef.current?.scrollToIndex({ index: info.index, animated: true }); } catch {/* ignore */}
+            }, 50);
+          }}
         />
       </View>
       <View style={styles.inputRow}>

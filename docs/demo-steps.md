@@ -1,0 +1,19 @@
+- I want to fill mudra loan form online
+- Enterprise: name is Microsoft Org
+- SI number: what is this si number
+- ohh that is 123
+- Branch: branch of Bhavnagar
+- Category: around 350000
+- Constituition: we are 3 people
+- Address: we sit at B4, Shivaji Circle, Bhavnagar
+- State: Gujarat
+- Pincode: Can you get the pincode for Bhavnagar
+- Premises: purchased
+- Telephone: not available
+- Mobile number: 9876543210
+- E-mail: my email is example@example.com
+- Business: I want to sell food items prepared at home
+- Commencement: last monday
+- Unit registered: what does that mean?
+- no
+- 
