@@ -19,7 +19,7 @@ export default function App() {
           name="Chat" 
           component={ChatScreen} 
           options={({ navigation }) => ({ 
-            title: 'GovAssist AI',
+            title: 'FormAssist AI',
             headerRight: () => (
               <TouchableOpacity
                 onPress={() => {

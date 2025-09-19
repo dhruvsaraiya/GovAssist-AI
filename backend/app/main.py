@@ -15,7 +15,7 @@ if not logging.getLogger().handlers:
 logging.getLogger("app.routers.chat").setLevel(logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
-app = FastAPI(title="GovAssist AI Backend", version="0.1.0")
+app = FastAPI(title="FormAssist AI Backend", version="0.1.0")
 
 FRONTEND_ORIGINS = [
     "http://localhost:8081",  # expo web dev
